@@ -1,12 +1,12 @@
 # Duepi Room — réarmement et transport HA natif
 
-Code produit : `c1c0f5735df474d74e5bafae631394beefc1501e`. Branche personnelle `codjardine/remote-room-regulation`, push vers le fork via `origin` uniquement.
+Code initial : `c1c0f5735df474d74e5bafae631394beefc1501e`. Corrections de fraîcheur et reprise : `cee5c52` puis `0c485c6`. Branche personnelle `codjardine/remote-room-regulation`, push vers le fork via `origin` uniquement.
 
 Ce rapport remplace, pour l'installation courante, les instructions de complément HA et la réserve du banc de la [validation initiale](2026-10-20-duepi-room.md), qui reste historique. Il couvre l'amendement de réarmement `aebed0d` puis le transport natif. La revue ciblée `aebed0d..c1c0f57` est approuvée sans constat important; la mise en service réelle et le retour API sont maintenant vérifiés. La régulation thermique reste à tester avec une source fraîche.
 
 ## Fonctionnement retenu
 
-Le package expose le champ texte persistant `Room temperature sensor`. HA rend le template transmis avec l'action native ESPHome, lit la valeur, son unité et `last_reported`, puis renvoie un paquet v1 au même appareil. Il faut autoriser les actions HA pour ce seul appareil. Aucun complément, script, automatisation, helper, jeton ou restart global HA n'est nécessaire.
+Le package expose le champ texte persistant `Room temperature sensor`. HA rend le template transmis avec l'action native ESPHome, lit la valeur, son unité et la date `duepi_sample_timestamp` si présente (sinon `last_reported`), puis renvoie un paquet v1 au même appareil. Il faut autoriser les actions HA pour ce seul appareil. Aucun complément, script, automatisation, helper, jeton ou restart global HA n'est nécessaire.
 
 Le contrôleur ESPHome conserve cible, compensation, PI facultative, âges et gardes UART. Le bouton `Reactivate room compensation` choisit Compensation, sans allumage. Le sélecteur Local est l'état manuel; une carte peut afficher ce choix et le bouton de reprise. Les réponses RD9000 connues synchronisent l'affichage Heat/Off sans envoyer d'ordre.
 
@@ -54,3 +54,18 @@ Le champ source est configuré. L'ESP a accepté l'âge réel de la mesure:1470 
 Le bloc Poêle de la tablette contient cible salon, mode, champ source, message Manuel, avertissement de mesure ancienne et bouton Réactiver. Un contrôle API confirme que ce seul bloc a changé. Le template d'avertissement passe le moteur HA strict. Le rendu visuel n'est pas revendiqué: la capture serveur est désactivée et la tentative navigateur a été interrompue par une reprise utilisateur; aucune interaction après cette reprise.
 
 **Limite terrain:** aucune activation de Compensation ni pression du bouton avec cette mesure trop ancienne. La sonde a montré un intervalle proche d'une heure, incompatible avec le maximum 15 min pendant une partie du temps. Ne pas allonger silencieusement le seuil. L'aller-retour API/âge est prouvé, mais l'application d'une nouvelle correctionRF2/RC6000 et la précision thermique de ce contrôleur restent à vérifier avec des données fraîches, puis la PI dans un second temps. Le seuil, le thermostat radiateurs et les paramètres constructeur sont conservés.
+
+
+## Correction de fraîcheur et reprise vérifiées le 20 octobre
+
+Le diagnostic a distingué les rapports réels de sonde et les écritures d'état HA. MQTT ne réécrit pas systématiquement une température identique; `last_reported` seul ne prouvait donc pas la cadence de la sonde. Le package utilise maintenant une date d'échantillon explicite lorsqu'elle est fournie, sans la remplacer par une date HA plus récente si elle est invalide. Un mapping par appareil Zigbee2MQTT exclut la température du cache et ignore le placeholder null des publications d'humidité. Aucun complément, helper ou restart HA ajouté.
+
+Le maximum de reporting de la seule sonde utilisée est passé de 3600 à 300 s. Deux cycles réels de cinq minutes ont été observés, puis **22,0 °C identiques à 15:21:02 et 15:26:01** ont reçu deux dates distinctes. L'âge publié par ESPHome suit ces dates et continue d'augmenter entre les rapports. Le seuil Duepi reste 900 s, la présence du relais 180 s et l'intégration PI ne progresse pas sur un simple polling HA.
+
+La première reprise a révélé deux raccords manquants : une décision RF2 pouvait être consommée par un poll sans émission, et le refresh différé du thermostat natif traitait un retour RC6000 comme une commande manuelle. Les entrées concernées passent par l'update existant; le refresh du thermostat est effectué sous le garde de synchronisation. La priorité des vraies commandes manuelles reste dans le contrôleur. Ces défauts ont été révélés par le contrôle matériel, malgré les tests isolés verts; aucun test du contrôleur seul n'est présenté comme une preuve de la réaction du SDK.
+
+Validation finale : **44 tests HA du dépôt**, **42 natifs**, **14 contrats**, **6 C/F**. Les six avertissements de fixtures/dépendances HA sont non bloquants, sans échec. Compilation ESP-01 réelle, legacy sans extension et C3 réussie; les fixtures à faux secrets ne sont pas flashées. Image réelle finale 560384 octets, RAM 59,0 %, flash 54,3 %, API build 15:19:03 après OTA. Aucune nouvelle compilation de la fixture ESP-01 Fahrenheit n'est revendiquée pour ce correctif; ses six contrôles de configuration passent.
+
+Test réel d'une source HA absente, sans créer d'entité : le repli fait passer RC6000 de **21 à 20 °C à 15:21:51**, avec Compensation maintenue. Sonde salon rétablie à 15:22:24; après le délai de cinq minutes, reprise normale à **21 °C confirmée par RC6000 à 15:26:51**, état regulating et toujours Compensation à 15:27:21. Cible pièce 20 °C, PI 0. Ce test d'indisponibilité est distinct d'un retrait physique de pile; l'expiration à 900 s malgré les heartbeats HA est couverte par l'horloge injectée.
+
+La précision thermique à 20 °C reste à mesurer. Un défaut d'affichage séparé du current_temperature de Room target est seulement noté en réserve, sans chantier supplémentaire. Les preuves détaillées et empreintes de firmware restent dans le rapport privé du suivi de déploiement.
