@@ -2,6 +2,7 @@
   "config": {
     "step": {
       "user": {
+        "description": "Choisissez une sonde de température de la pièce et l’appareil ESPHome. Réglez le mode de régulation sur l’appareil ESPHome. L’arrêt du poêle ou une modification manuelle de sa consigne native sélectionne Local. Pour reprendre la compensation, appuyez sur « Réactiver la compensation » sur l’appareil ESPHome. Ce bouton n’allume pas le poêle.",
         "data": {
           "device_id": "Appareil ESPHome",
           "source_entity_id": "Sonde de température de la pièce"
@@ -21,6 +22,7 @@
   "options": {
     "step": {
       "init": {
+        "description": "Choisissez ici la sonde de température de la pièce. Réglez le mode de régulation sur l’appareil ESPHome. L’arrêt du poêle ou une modification manuelle de sa consigne native sélectionne Local. Appuyez sur « Réactiver la compensation » sur l’appareil ESPHome pour reprendre. Ce bouton n’allume pas le poêle.",
         "data": {
           "source_entity_id": "Sonde de température de la pièce"
         }

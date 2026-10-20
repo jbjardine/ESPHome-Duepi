@@ -31,6 +31,16 @@ select:
     id: duepi_room_mode
     name: "Room regulation mode"
 
+button:
+  - platform: template
+    id: duepi_room_rearm
+    name: "Reactivate room compensation"
+    icon: mdi:restart
+    on_press:
+      - select.set:
+          id: duepi_room_mode
+          option: Compensation
+
 number:
   - platform: duepi_room
     duepi_room_id: duepi_room_main

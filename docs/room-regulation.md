@@ -60,14 +60,31 @@ The optional package adds these entities:
 
 | Entity | Purpose |
 | --- | --- |
-| `Room target` climate | Holds the desired room temperature independently from the stove's native setpoint. Explicit Heat and Off calls use the existing native mode path. Off immediately selects Local. Heat keeps the selected mode and does not activate regulation from Local. |
-| `Room regulation mode` select | **Local**, **Compensation**, or **Compensation + PI**. Local leaves native setpoint choices alone. Compensation applies the room-temperature offset. PI adds a bounded integral correction. |
+| `Room target` climate | Holds the desired room temperature independently from the stove's native setpoint. Its displayed Heat/Off follows the latest recognized raw stove phase; an unknown phase leaves the last display unchanged. This is observation only. Explicit Heat and Off calls use the existing native mode path. Off immediately selects Local. Heat keeps the selected mode and does not activate regulation from Local. |
+| `Room regulation mode` select | **Local**, **Compensation**, or **Compensation + PI**. This is the armed/manual regulation choice. Local leaves native setpoint choices alone. Compensation applies the room-temperature offset. PI adds a bounded integral correction. |
+| `Reactivate room compensation` button | Selects **Compensation** through the existing mode selector. It does not send a Heat/Off command or turn on the stove. |
 | `Room fallback target` number | Native setpoint used once when the selected regulation mode loses a usable room source. Default: 20 °C (68 °F); it is limited to the configured stove minimum and maximum. |
 | `Room regulation status` text sensor | Operating reason: `local`, `waiting_stove`, `waiting_source`, `regulating`, `fallback`, `bridge`, `stove_inactive`, `awaiting_confirmation`, `command_unconfirmed`, or `uart_busy`. |
 | `Room source age` sensor | Age reported by Home Assistant for the selected room sensor, in seconds. The firmware's default maximum is 15 minutes. |
 | `Room PI correction` sensor | Current bounded PI correction as a Celsius difference (`Δ°C`), without an absolute-temperature device class. It stays zero in Local and Compensation modes. |
 | `Room computed native target` sensor | The computed native setpoint before the RF2 write request. |
 | `Duepi Room Relay v1` text | Versioned JSON relay used by the Home Assistant companion. Do not rename or replace this entity. |
+
+When the regulation mode is **Local**, a native Lovelace conditional card can
+explain why room compensation is paused and how to resume it. Replace the
+example entity ID with the one created for the installed ESPHome device:
+
+```yaml
+type: conditional
+conditions:
+  - condition: state
+    entity: select.room_regulation_mode
+    state: Local
+card:
+  type: markdown
+  content: >-
+    Mode manuel — compensation désactivée. Cliquez sur Réactiver la compensation pour reprendre la régulation avec la sonde de la pièce. Ce bouton n'allume pas le poêle.
+```
 
 The firmware calculates and exposes absolute temperatures in canonical
 Celsius. The HA companion accepts Celsius and Fahrenheit room sensors and
@@ -103,10 +120,10 @@ auto-detect or send an unverified Fahrenheit protocol.
 Automatic control requires fresh raw stove temperature and operating state, a
 usable room report, and an idle UART. The firmware uses raw RD1000 temperature
 before legacy filtering and raw RD9000 phase; only the stable burning phase
-`0x0201` is eligible. Bridge takeover, alarms, manual native setpoint changes,
-stale observations, and unavailable UART suspend automatic output and reset PI
-state as defined by the protocol. Received stove status never creates a Heat or
-Off command.
+`0x0201` is eligible. Bridge takeover, alarms, stale observations, and
+unavailable UART suspend automatic output and reset PI state as defined by the
+protocol. A manual native setpoint change or an explicit Off command selects
+Local. Received stove status never creates a Heat or Off command.
 
 The equation without PI is:
 

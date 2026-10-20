@@ -34,6 +34,38 @@ enum DiagnosticMetric : uint8_t {
   COMPUTED_TARGET,
 };
 
+inline bool map_stove_phase_to_display_mode(uint16_t phase, climate::ClimateMode *mode) {
+  if (mode == nullptr)
+    return false;
+  switch (phase) {
+    case 0x0000:  // Off
+    case 0x0301:  // Stop sequence
+    case 0x0801:  // Cooldown 1
+    case 0x0802:  // Cooldown 2
+      *mode = climate::CLIMATE_MODE_OFF;
+      return true;
+    case 0x0101:  // Ignition
+    case 0x0102:  // Load wood
+    case 0x0103:  // Fire on
+    case 0x0104:  // Fire and vent on
+    case 0x0105:  // Fire on E693
+    case 0x010A:  // Delayed on
+    case 0x0132:  // Load wood V100
+    case 0x0133:  // Ignition V100
+    case 0x0200:  // On, cleaning
+    case 0x0201:  // On
+    case 0x0401:  // Fire cleaning
+    case 0x1000:  // Eco
+    case 0x1001:  // Eco cooldown 1
+    case 0x1002:  // Eco cooldown 2
+    case 0x1003:  // Eco off (legacy climate reports on)
+      *mode = climate::CLIMATE_MODE_HEAT;
+      return true;
+    default:
+      return false;
+  }
+}
+
 class DuepiRoomComponent : public PollingComponent {
  public:
   DuepiRoomComponent(int native_min, int native_max, float fallback_target, uint32_t max_source_age_seconds,
@@ -63,7 +95,7 @@ class DuepiRoomComponent : public PollingComponent {
   void observe_raw_stove_temperature(float temperature_c) {
     this->controller_.observe_raw_stove_temperature(temperature_c);
   }
-  void observe_raw_stove_phase(uint16_t phase) { this->controller_.observe_raw_stove_phase(phase); }
+  void observe_raw_stove_phase(uint16_t phase);
   void observe_stove_alarm(bool active) { this->controller_.observe_stove_alarm(active); }
   void observe_native_target(float target_c) { this->controller_.observe_native_target(target_c); }
   void observe_manual_native_target(float target_c) { this->controller_.observe_manual_native_target(target_c); }
@@ -102,6 +134,7 @@ class DuepiRoomClimate : public climate::Climate, public Component {
   void set_parent(DuepiRoomComponent *parent) { this->parent_ = parent; }
   void setup() override;
   void publish_decision(const Decision &decision, float room_target);
+  void publish_observed_mode(climate::ClimateMode mode);
 
  protected:
   climate::ClimateTraits traits() override;

@@ -2,6 +2,7 @@
   "config": {
     "step": {
       "user": {
+        "description": "Choose a room temperature sensor and the ESPHome device. Set the regulation mode on the ESPHome device. Turning the stove Off or changing its native target manually switches the mode to Local. To resume compensation, press “Reactivate room compensation” on the ESPHome device. This button does not turn the stove on.",
         "data": {
           "device_id": "ESPHome device",
           "source_entity_id": "Room temperature sensor"
@@ -21,6 +22,7 @@
   "options": {
     "step": {
       "init": {
+        "description": "Choose the room temperature sensor here. Set the regulation mode on the ESPHome device. Turning the stove Off or changing its native target manually switches the mode to Local. Press “Reactivate room compensation” on the ESPHome device to resume. This button does not turn the stove on.",
         "data": {
           "source_entity_id": "Room temperature sensor"
         }

@@ -1,17 +1,5 @@
-#include "components/duepi_room/controller.h"
-#include "components/duepi_room/relay_parser.h"
-#include "esphome/core/application.h"
-
-namespace esphome {
-class TestSourceGuard {
- public:
-  explicit TestSourceGuard(const LogString *) {}
-};
-}  // namespace esphome
-
-#define ScopedSourceGuard TestSourceGuard
+#include "components/duepi_room/duepi_room.h"
 #include "esphome/components/script/script.h"
-#undef ScopedSourceGuard
 
 #include <cmath>
 #include <cstdint>
@@ -547,6 +535,32 @@ TEST(postboot_inputs_and_a_stable_burning_phase_are_required_before_regulation) 
   const Decision burning = fixture.controller.poll();
   CHECK(burning.status == Status::REGULATING);
   CHECK(burning.target_requested);
+}
+
+TEST(observed_stove_phase_maps_only_known_states_to_climate_display_mode) {
+  using esphome::climate::ClimateMode;
+  using esphome::climate::CLIMATE_MODE_HEAT;
+  using esphome::climate::CLIMATE_MODE_OFF;
+
+  const uint16_t off_phases[] = {0x0000, 0x0301, 0x0801, 0x0802};
+  for (uint16_t phase : off_phases) {
+    ClimateMode mode = CLIMATE_MODE_HEAT;
+    CHECK(map_stove_phase_to_display_mode(phase, &mode));
+    CHECK(mode == CLIMATE_MODE_OFF);
+  }
+
+  const uint16_t heat_phases[] = {0x0101, 0x0102, 0x0103, 0x0104, 0x0105, 0x010A, 0x0132, 0x0133,
+                                 0x0200, 0x0201, 0x0401, 0x1000, 0x1001, 0x1002, 0x1003};
+  for (uint16_t phase : heat_phases) {
+    ClimateMode mode = CLIMATE_MODE_OFF;
+    CHECK(map_stove_phase_to_display_mode(phase, &mode));
+    CHECK(mode == CLIMATE_MODE_HEAT);
+  }
+
+  ClimateMode unchanged = CLIMATE_MODE_OFF;
+  CHECK(!map_stove_phase_to_display_mode(0x7777, &unchanged));
+  CHECK(unchanged == CLIMATE_MODE_OFF);
+  CHECK(!map_stove_phase_to_display_mode(0x0201, nullptr));
 }
 
 TEST(nonzero_stove_error_suspends_regulation_until_normal_observations_resume) {

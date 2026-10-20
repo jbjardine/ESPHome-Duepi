@@ -147,6 +147,13 @@ void DuepiRoomComponent::request_native_mode(bool heat) {
   }
 }
 
+void DuepiRoomComponent::observe_raw_stove_phase(uint16_t phase) {
+  this->controller_.observe_raw_stove_phase(phase);
+  climate::ClimateMode observed_mode;
+  if (this->room_climate_ != nullptr && map_stove_phase_to_display_mode(phase, &observed_mode))
+    this->room_climate_->publish_observed_mode(observed_mode);
+}
+
 void DuepiRoomComponent::receive_relay_payload(const std::string &payload) {
   RelayMessage message;
   if (!parse_relay_message(payload, &message)) {
@@ -221,6 +228,13 @@ void DuepiRoomClimate::publish_decision(const Decision &decision, float room_tar
   this->target_temperature = room_target;
   if (changed)
     this->publish_state();
+}
+
+void DuepiRoomClimate::publish_observed_mode(climate::ClimateMode mode) {
+  if (this->mode == mode)
+    return;
+  this->mode = mode;
+  this->publish_state();
 }
 
 climate::ClimateTraits DuepiRoomClimate::traits() {

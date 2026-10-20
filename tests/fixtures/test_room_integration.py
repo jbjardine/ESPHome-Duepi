@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import re
 import unittest
 
@@ -98,6 +99,87 @@ class RoomIntegrationContracts(unittest.TestCase):
         self.assertIn("id: STOVE_SET_MODE", native_mode)
         self.assertIn("boot_restore_in_progress", native_mode)
         self.assertIn("climate_sync_in_progress", native_mode)
+
+    def test_rearm_button_only_selects_compensation(self) -> None:
+        package = read("components/packages/room_regulation.yaml")
+        match = re.search(r"(?ms)^button:\n(.*?)(?=^[a-z_][a-z0-9_-]*:\n|\Z)", package)
+        self.assertIsNotNone(match, "template rearm button is missing")
+        button = match.group(1)
+
+        self.assertRegex(button, r'(?m)^  - platform: template$')
+        self.assertRegex(button, r'(?m)^    id: duepi_room_rearm$')
+        self.assertRegex(button, r'(?m)^    name: "Reactivate room compensation"$')
+        self.assertRegex(button, r'(?m)^    icon: mdi:restart$')
+        self.assertEqual(re.findall(r"(?m)^      - ([a-z_]+(?:\.[a-z_]+)*):$", button), ["select.set"])
+        self.assertRegex(button, r"(?m)^          id: duepi_room_mode$")
+        self.assertRegex(button, r"(?m)^          option: Compensation$")
+
+    def test_assistant_descriptions_explain_manual_local_and_reactivation(self) -> None:
+        expected = {
+            "custom_components/duepi_room/strings.json": (
+                "room temperature sensor",
+                "mode on the ESPHome device",
+                "switches the mode to Local",
+                "Reactivate room compensation",
+                "does not turn the stove on",
+            ),
+            "custom_components/duepi_room/translations/en.json": (
+                "room temperature sensor",
+                "mode on the ESPHome device",
+                "switches the mode to Local",
+                "Reactivate room compensation",
+                "does not turn the stove on",
+            ),
+            "custom_components/duepi_room/translations/fr.json": (
+                "sonde de température de la pièce",
+                "mode de régulation sur l’appareil ESPHome",
+                "sélectionne Local",
+                "Réactiver la compensation",
+                "n’allume pas le poêle",
+            ),
+        }
+        for path, phrases in expected.items():
+            with self.subTest(path=path):
+                strings = json.loads(read(path))
+                descriptions = (
+                    strings["config"]["step"]["user"].get("description", ""),
+                    strings["options"]["step"]["init"].get("description", ""),
+                )
+                for description in descriptions:
+                    for phrase in phrases:
+                        self.assertIn(phrase, description)
+
+    def test_script_sdk_guard_is_identical_across_native_translation_units(self) -> None:
+        runner = read("tests/native/run_tests.sh")
+        compatibility_header = ROOT / "tests/native/esphome_script_test_compat.h"
+        test_translation_unit = read("tests/native/test_duepi_room.cpp")
+
+        self.assertIn('-include "$repo_root/tests/native/esphome_script_test_compat.h"', runner)
+        self.assertTrue(compatibility_header.is_file())
+        self.assertIn("#define ScopedSourceGuard TestSourceGuard", compatibility_header.read_text())
+        self.assertNotIn("class TestSourceGuard", test_translation_unit)
+
+    def test_observed_stove_phase_updates_room_climate_display_without_commands(self) -> None:
+        header = read("components/duepi_room/duepi_room.h")
+        component = read("components/duepi_room/duepi_room.cpp")
+        observer = re.search(
+            r"(?s)void DuepiRoomComponent::observe_raw_stove_phase\(uint16_t phase\) \{(.*?)\n\}",
+            component,
+        )
+        self.assertIn("map_stove_phase_to_display_mode", header)
+        self.assertIsNotNone(observer, "raw phase observer must publish the observed display mode")
+        body = observer.group(1)
+        self.assertIn("controller_.observe_raw_stove_phase(phase)", body)
+        self.assertIn("this->room_climate_->publish_observed_mode", body)
+        self.assertNotIn("request_native_mode", body)
+        publish_mode = re.search(
+            r"(?s)void DuepiRoomClimate::publish_observed_mode\([^)]*\) \{(.*?)\n\}",
+            component,
+        )
+        self.assertIsNotNone(publish_mode)
+        self.assertIn("this->mode = mode", publish_mode.group(1))
+        self.assertIn("this->publish_state()", publish_mode.group(1))
+        self.assertNotIn("make_call", publish_mode.group(1))
 
 
 if __name__ == "__main__":
