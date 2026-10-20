@@ -1,5 +1,7 @@
 # Vérification de la régulation de pièce Duepi
 
+> Historique de la préparation initiale. Le [rapport natif](2026-10-20-duepi-native.md) décrit le réarmement, le transport sans complément HA et la correction ultérieure de la réserve du banc.
+
 État de préparation sur `codjardine/remote-room-regulation`, depuis `upstream/main` à `a7f8915`. Aucun flash, service Home Assistant ou ordre au poêle n'a été exécuté pendant cette implémentation. Les push de cette branche visent exclusivement le fork `jbjardine/ESPHome-Duepi`.
 
 Rapport final du 20 octobre 2026. Le code produit vérifié est au commit

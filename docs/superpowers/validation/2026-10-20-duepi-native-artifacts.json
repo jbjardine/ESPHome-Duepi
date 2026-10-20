@@ -1,0 +1,68 @@
+{
+  "code_commit": "c1c0f5735df474d74e5bafae631394beefc1501e",
+  "esphome": "2026.9.1",
+  "fixture_secrets": "dummy - never flash these images on a real device",
+  "artifacts": [
+    {
+      "fixture": "ESP-01 C",
+      "image_path": "tests/fixtures/.esphome/tests/fixtures/.esphome/room-esp01-1m/.pioenvs/duepi-room-opt-in-build/firmware.ota.bin",
+      "ota_bytes": 560288,
+      "sha256": "f70685a455b688892530ef5d2d8c8e0284f7c938ad96a1b37d65210e0421aa98",
+      "gzip9_bytes": 389591,
+      "ota_sector_bytes": 561152,
+      "gzip_sector_bytes": 393216,
+      "build_info": [
+        "config_hash=0x309dbf78 build_time_str=2026-10-20 14:10:03 +0200"
+      ],
+      "size_lines": [
+        "RAM:   [======    ]  59.0% (used 48368 bytes from 81920 bytes)",
+        "Flash: [=====     ]  54.3% (used 556141 bytes from 1023984 bytes)"
+      ]
+    },
+    {
+      "fixture": "ESP-01 F",
+      "image_path": "tests/fixtures/.esphome/tests/fixtures/.esphome/room-esp01-1m-fahrenheit/.pioenvs/duepi-room-optin-f/firmware.ota.bin",
+      "ota_bytes": 560304,
+      "sha256": "79fbe2cf4350f070f006b5bbb9d8e207a28ba5271123f0d5d4c33aead7e82208",
+      "gzip9_bytes": 389603,
+      "ota_sector_bytes": 561152,
+      "gzip_sector_bytes": 393216,
+      "build_info": [
+        "config_hash=0x04bfc96f build_time_str=2026-10-20 14:10:03 +0200"
+      ],
+      "size_lines": [
+        "RAM:   [======    ]  59.0% (used 48368 bytes from 81920 bytes)",
+        "Flash: [=====     ]  54.3% (used 556149 bytes from 1023984 bytes)"
+      ]
+    },
+    {
+      "fixture": "LOLIN C3 Mini",
+      "image_path": "tests/fixtures/.esphome/tests/fixtures/.esphome/room-lolin-c3-mini/build/firmware.ota.bin",
+      "ota_bytes": 1039744,
+      "sha256": "af220a5dea387aecace5b9869871a4f03cbfc023e3cee1f881954fd116f5cca2",
+      "gzip9_bytes": 654220,
+      "ota_sector_bytes": 1040384,
+      "gzip_sector_bytes": 655360,
+      "build_info": [
+        "config_hash=0x8b6f73ce build_time_str=2026-10-20 14:08:29 +0200"
+      ],
+      "size_lines": [
+        "RAM:   [====      ]  35.4% (used 113680 bytes from 321296 bytes)",
+        "Flash: [======    ]  56.6% (used 1039376 bytes from 1835008 bytes)"
+      ]
+    }
+  ],
+  "private_node": {
+    "image_published": false,
+    "ota_bytes": 560288,
+    "gzip9_bytes": 389622,
+    "ram_used": 48304,
+    "ram_total": 81920,
+    "app_used": 556133,
+    "app_total": 1023984
+  },
+  "ota_layout_end_bytes": 1028096,
+  "extension_to_extension_margin_bytes": 73728,
+  "legacy_initial_build_reused": true,
+  "legacy_ota_bytes": 520816
+}
