@@ -153,7 +153,7 @@ void DuepiRoomComponent::set_mode_from_select(Mode mode) {
   this->controller_.set_mode(mode);
   if (this->mode_select_ != nullptr)
     this->mode_select_->publish_mode(mode);
-  this->publish_decision_(this->controller_.poll());
+  this->update();
 }
 
 void DuepiRoomComponent::request_native_mode(bool heat) {
@@ -196,7 +196,7 @@ void DuepiRoomComponent::receive_native_source_payload(const std::string &payloa
   if (!parse_relay_message(payload, &message))
     return;
   this->controller_.observe_relay(message);
-  this->publish_decision_(this->controller_.poll());
+  this->update();
 }
 
 bool DuepiRoomComponent::set_source_entity_id(const std::string &entity_id) {
@@ -291,7 +291,7 @@ bool DuepiRoomComponent::set_fallback_target(float temperature_c) {
     return false;
   if (this->fallback_number_ != nullptr)
     this->fallback_number_->publish_state(this->controller_.config().fallback_target);
-  this->publish_decision_(this->controller_.poll());
+  this->update();
   return true;
 }
 
@@ -376,7 +376,7 @@ void DuepiRoomClimate::control(const climate::ClimateCall &call) {
       this->parent_->request_native_mode(requested_mode == climate::CLIMATE_MODE_HEAT);
   }
   if (this->parent_ != nullptr)
-    this->publish_decision(this->parent_->controller().poll(), this->parent_->controller().room_target());
+    this->parent_->update();
   else
     this->publish_state();
 }

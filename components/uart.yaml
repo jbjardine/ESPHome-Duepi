@@ -248,7 +248,12 @@ uart:
                   #endif
                   if (temp >= min_target && temp <= max_target) {
                     id(climate_sync_in_progress) = true;
+                    const bool target_changed = id(Stove).target_temperature != temp;
                     id(Stove).target_temperature = temp;
+                    // Thermostat detects direct target changes only on refresh.
+                    // Consume its deferred trigger while the sync guard is active.
+                    if (target_changed)
+                      id(Stove).refresh();
                     id(climate_sync_in_progress) = false;
                   }
                   else { id(debug).publish_state("Error temperature out of range :"+temp); }
