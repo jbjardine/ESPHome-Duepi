@@ -4,6 +4,7 @@
 
 - Correctif du 20/10 au soir : conserver l'intégrale pendant les seuls nettoyages connus 0x0401/0x0200 de moins de deux minutes, sans intégration ni écriture. Reprise après de nouvelles lectures RD1000/RC6000, avec nouvelle base de temps. Timeout, arrêt réel, phase inconnue, perte de données, alarme et priorité manuelle gardent leur remise à zéro. Aucun arrêt automatique ajouté; gains PI inchangés.
 - Vérification de ce correctif : 5 nouveaux cas échouaient avant l'implémentation; 48/48 tests natifs et 14/14 contrats passent après ajout du contrôle d'expiration de reprise. Configuration ESP-01 réelle compilée avec ESPHome 2026.9.1 : RAM 48320/81920 (59,0 %), flash 556597/1023984 (54,4 %), image 560752 octets. OTA réussie, même module/API confirmé avec build 21:49:25. Sonde réelle reçue après le retry initial; mode courant Compensation + PI rétabli à 21:52:09, regulating, cible pièce 20 °C, native/calcul 22 °C, source 21,4 °C âgée de 165 s et correction PI -0,14 °C. Aucun ordre Marche/Arrêt envoyé pour cette installation; pont off et radiateurs Off/16 °C. Le prochain nettoyage physique n'est pas encore une preuve acquise.
+- Contrôle ultérieur : premier réarmement suivi d'un retour Local à 21:52:22, sans changement de consigne native ni appel utilisateur visible dans le journal HA. Aucun nettoyage depuis le flash. Après un second réarmement à 21:55:52, capture API jusqu'à 21:56:31 et lecture à 21:57:23 : Compensation + PI/regulating, native/calcul 22 °C, cible pièce 20 °C, sonde 21,4 °C fraîche (178 s). Cause du premier basculement non établie; ne pas le présenter comme corrigé ni l'attribuer à JB. Code `e373d72` poussé seulement sur le fork.
 
 - Résultat demandé : compensation ESPHome avec sonde HA, PI facultative, reprise explicite par bouton, puis installation autorisée sur le poêle de JB. Dernier choix : aucun complément HA à installer, aucun restart global.
 - Branche `codjardine/remote-room-regulation`; push uniquement vers `origin` sur le fork personnel. Aucun travail dans DUEPI_EVO ni push upstream.
@@ -21,6 +22,8 @@
 - Essai thermique chezJB avant toute proposition upstream : source fraîche, Compensation sans PI, comparaison pièce/RD1000/calcul/RC6000/RD4000 sur plusieurs relevés; PI dans un second temps. Pas de second régulateur en parallèle. Ne jamais flasher les images de fixtures à secrets factices.
 
 ## Idées en réserve
+
+- Reprise après boot : retour Local à 21:52:22 après réarmement à 21:52:09, non reproduit après réarmement à 21:55:52 sur la fenêtre observée. Cause à instrumenter si le phénomène se répète; aucun correctif de ce chemin ajouté au lot de conservation de l'intégrale.
 
 - Précision à 20 °C et intérêt réel de la PI à mesurer physiquement après validation de cadence. L'ajustement du maximum de reporting de cette sonde fait partie du correctif de fraîcheur demandé le 20/10; aucune modification des autres sondes autorisée par ce chantier.
 - Affichage à revoir séparément : le climate Room target n'annonce pas la prise en charge de current_temperature dans ses traits, malgré une source reçue et son âge correct. Le calcul utilise la valeur reçue; aucun correctif de cet affichage engagé dans le chantier fraîcheur.

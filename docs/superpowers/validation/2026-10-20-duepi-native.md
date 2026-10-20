@@ -103,3 +103,12 @@ La PI repart normalement à zéro au redémarrage, avec correction proportionnel
 -0,14 °C. Aucun ordre Marche/Arrêt envoyé pour installer ce correctif. Pont off
 et radiateurs Off/16 °C. Un nettoyage physique après ce flash n'a pas encore
 été observé; le maintien thermique à 20 °C n'est pas une conclusion de ce test.
+
+Le contrôle ultérieur a relevé un retour Local à **21:52:22**, sans changement
+de consigne native ni appel utilisateur correspondant dans le journal HA.
+Aucun nettoyage n'a eu lieu depuis le flash; la cause n'est pas établie et
+n'est attribuée ni au correctif ni à JB. Après réarmement à **21:55:52**, la
+capture API jusqu'à 21:56:31 puis la lecture **21:57:23** confirment Compensation
++ PI/regulating, native/calcul 22 °C, cible pièce 20 °C et source salon 21,4 °C
+fraîche (178 s). La non-récurrence sur cette fenêtre ne démontre pas la résolution
+du basculement initial. Le code de ce lot est `e373d72`, poussé uniquement au fork.
