@@ -30,6 +30,8 @@ Example:
 
 The age means HA report age, not guaranteed physical sample age. Preserve that distinction in documentation/diagnostics. Reject unknown/unavailable, restored state, unsupported units and nonfinite values. Heartbeats re-read the HA state so unchanged-value reports can be detected without a global state_reported listener. They retain the same sample_id until last_reported changes and recompute age_s; they do not reset source age by themselves.
 
+The configurable age policy belongs to firmware. The companion does not hardcode a 900-second validity limit: a well-formed numeric source is transmitted with its real age_s, and firmware applies its configured threshold. valid describes source availability/value/unit/restoration quality; it does not override firmware freshness checks.
+
 Only the most recent snapshot is transmitted on availability/reconnection; no replay queue of old measurements. Cancel/drain the old source listener and sender before a generation replacement/unload. Firmware requires a new postboot packet before control, regardless of restored mode/target.
 
 ## Firmware state surface
