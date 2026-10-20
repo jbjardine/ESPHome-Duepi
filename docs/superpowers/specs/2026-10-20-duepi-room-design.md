@@ -17,6 +17,7 @@ All product code lives in ESPHome-Duepi. DUEPI_EVO is outside this change. Work 
 - A configurable maximum source age, default 15 minutes.
 - Diagnostics: operating reason/status, source age, PI correction, and computed native target.
 - The room climate's explicit user heat/off commands reuse the existing native path. Automatic regulation never generates heat/off commands.
+- Explicit OFF on the room climate immediately selects Local and resets I. HEAT preserves the selected regulation mode, cannot reactivate external control from Local, and requires fresh post-command burning observations. Received stove-mode observations never invoke the user-command callback.
 - Native Celsius support in v1. HA sources in Celsius or Fahrenheit are accepted and normalized to Celsius. Reject unsupported native units at configuration time for the opt-in feature.
 
 The HA companion has a device selector and a temperature-sensor selector, one config entry per ESPHome module, and an options flow to replace the sensor. It creates no climate or duplicate device. It discovers the versioned text relay by stable registry identity, not a user-edited entity ID/name. Unsupported firmware is rejected. All calculations and control state stay on ESPHome.
