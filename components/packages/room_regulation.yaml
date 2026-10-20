@@ -31,8 +31,9 @@ duepi_room:
           data_template:
             payload: >-
               {%- set source_state = states[source] if source else none -%}
-              {%- set last_reported = source_state.last_reported if source_state else none -%}
-              {%- set reported_ts = as_timestamp(last_reported, default=none) if last_reported else none -%}
+              {# A source-provided report timestamp survives identical-value filtering and HA reconnects. #}
+              {%- set source_report = source_state.attributes.get('duepi_sample_timestamp', source_state.last_reported) if source_state else none -%}
+              {%- set reported_ts = as_timestamp(source_report, default=none) if source_report is not none else none -%}
               {%- set now_ts = as_timestamp(now(), default=none) -%}
               {%- set age_raw = now_ts - reported_ts if now_ts is not none and reported_ts is not none else none -%}
               {%- set age_ok = age_raw is not none and age_raw >= 0 and age_raw <= 4294967295 -%}

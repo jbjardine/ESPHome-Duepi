@@ -192,3 +192,125 @@ async def test_native_action_uses_dynamic_node_service_and_string_callback_contr
     assert api_action["variables"] == {"payload": "string"}
     assert "receive_native_source_payload(payload)" in api_action["then"][0]["lambda"]
     assert "homeassistant_services: true" in package_text
+
+
+async def test_temperature_report_timestamp_keeps_a_stable_value_fresh(hass, monkeypatch):
+    """Stable MQTT temperatures use their real report time, not a HA state write."""
+    now = dt_util.utcnow()
+    monkeypatch.setattr(dt_util, "utcnow", lambda: now)
+    hass.states.async_set(
+        "sensor.room_temperature", "21.4",
+        {"unit_of_measurement": "°C",
+         "duepi_sample_timestamp": (now - timedelta(seconds=75)).isoformat()},
+        timestamp=(now - timedelta(hours=2)).timestamp(),
+    )
+    _, packet = await _render_payload(
+        hass, "sensor.room_temperature", "0123456789abcdef0123456789abcdef", 1
+    )
+    assert packet["valid"] is True
+    assert packet["temp_c"] == 21.4
+    assert packet["age_s"] == 75
+
+
+async def test_new_ha_state_write_does_not_refresh_a_lost_temperature_source(hass, monkeypatch):
+    """A humidity update/reconnect cannot make a cached temperature fresh."""
+    now = dt_util.utcnow()
+    monkeypatch.setattr(dt_util, "utcnow", lambda: now)
+    hass.states.async_set(
+        "sensor.room_temperature", "21.4",
+        {"unit_of_measurement": "°C",
+         "duepi_sample_timestamp": (now - timedelta(hours=2)).isoformat()},
+    )
+    _, first = await _render_payload(
+        hass, "sensor.room_temperature", "0123456789abcdef0123456789abcdef", 1
+    )
+    assert first["age_s"] == 7200
+    monkeypatch.setattr(dt_util, "utcnow", lambda: now + timedelta(seconds=60))
+    monkeypatch.setattr(dt_util, "now", lambda *_: now + timedelta(seconds=60))
+    _, heartbeat = await _render_payload(
+        hass, "sensor.room_temperature", "0123456789abcdef0123456789abcdef", 2
+    )
+    assert heartbeat["age_s"] == 7260
+    assert heartbeat["sample_id"] == first["sample_id"]
+
+
+@pytest.mark.parametrize("timestamp_value", [None, "", "unavailable", "not-a-date", "1e308"])
+async def test_invalid_explicit_report_timestamp_does_not_fall_back_to_ha_time(
+    hass, timestamp_value
+):
+    hass.states.async_set(
+        "sensor.room_temperature", "21.4",
+        {"unit_of_measurement": "°C", "duepi_sample_timestamp": timestamp_value},
+    )
+    _, packet = await _render_payload(
+        hass, "sensor.room_temperature", "0123456789abcdef0123456789abcdef", 1
+    )
+    assert packet["valid"] is False
+    assert "temp_c" not in packet
+
+
+async def test_identical_temperature_with_new_report_is_a_distinct_sample(hass, monkeypatch):
+    now = dt_util.utcnow()
+    monkeypatch.setattr(dt_util, "utcnow", lambda: now)
+    attrs = {"unit_of_measurement": "°C",
+             "duepi_sample_timestamp": (now - timedelta(seconds=300)).isoformat()}
+    hass.states.async_set("sensor.room_temperature", "21.4", attrs)
+    _, old = await _render_payload(
+        hass, "sensor.room_temperature", "0123456789abcdef0123456789abcdef", 1
+    )
+    attrs["duepi_sample_timestamp"] = now.isoformat()
+    hass.states.async_set("sensor.room_temperature", "21.4", attrs)
+    _, new = await _render_payload(
+        hass, "sensor.room_temperature", "0123456789abcdef0123456789abcdef", 2
+    )
+    assert new["temp_c"] == old["temp_c"] == 21.4
+    assert old["age_s"] == 300
+    assert new["age_s"] == 0
+    assert new["sample_id"] != old["sample_id"]
+
+
+async def test_mqtt_temperature_timestamp_ignores_humidity_but_renews_identical_reports(
+    hass, monkeypatch
+):
+    """Run the shipped Z2M mapping and Duepi payload through HA's real renderer."""
+    config = yaml.safe_load(
+        (ROOT / "examples/room-source-zigbee2mqtt.yaml").read_text()
+    )["devices"]["0x00124b0000000000"]["homeassistant"]["temperature"]
+    timestamp_template = Template(config["json_attributes_template"], hass)
+    now = dt_util.utcnow()
+    monkeypatch.setattr(dt_util, "now", lambda *_: now)
+    hass.states.async_set("sensor.room_temperature", "21.4", {"unit_of_measurement": "°C"})
+
+    async def receive(payload):
+        current = hass.states.get("sensor.room_temperature")
+        attrs = timestamp_template.async_render(
+            {"this": current, "value_json": payload}, parse_result=True
+        )
+        # The production filter removes temperature from cached humidity packets.
+        value = Template(config["value_template"], hass).async_render(
+            {"this": current, "value_json": payload}, parse_result=False
+        )
+        hass.states.async_set(
+            "sensor.room_temperature", value or current.state,
+            {"unit_of_measurement": "°C", **attrs},
+        )
+        return await _render_payload(
+            hass, "sensor.room_temperature", "0123456789abcdef0123456789abcdef", 1
+        )
+
+    _, initial = await receive({"temperature": 21.4, "humidity": 52.3})
+    assert initial["valid"] is True
+    assert initial["age_s"] == 0
+    now += timedelta(seconds=901)
+    _, humidity_only = await receive({"humidity": 52.4})
+    assert humidity_only["age_s"] == 901
+    assert humidity_only["sample_id"] == initial["sample_id"]
+    # Z2M's HA extension inserts null for a filtered/missing temperature.
+    _, humidity_placeholder = await receive({"humidity": 52.5, "temperature": None})
+    assert humidity_placeholder["temp_c"] == 21.4
+    assert humidity_placeholder["age_s"] == 901
+    assert humidity_placeholder["sample_id"] == initial["sample_id"]
+    _, stable_temperature = await receive({"temperature": 21.4})
+    assert stable_temperature["age_s"] == 0
+    assert stable_temperature["sample_id"] != initial["sample_id"]
+    assert stable_temperature["temp_c"] == initial["temp_c"]

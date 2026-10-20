@@ -1,0 +1,18 @@
+# Merge into this temperature device's Zigbee2MQTT options, not ESPHome.
+# Replace the IEEE address, friendly name and topic with the existing device.
+# The per-device filter is essential: humidity/battery messages must not carry
+# a cached temperature and acquire a new temperature-report timestamp.
+devices:
+  '0x00124b0000000000':
+    friendly_name: Room sensor
+    retain: false
+    filtered_cache:
+      - '^temperature$'
+    homeassistant:
+      temperature:
+        value_template: "{{ value_json.temperature if value_json.temperature is defined and value_json.temperature is not none else '' }}"
+        json_attributes_topic: zigbee2mqtt/Room sensor
+        json_attributes_template: >-
+          {%- set previous = this.attributes.get('duepi_sample_timestamp', '') -%}
+          {%- set reported = now().isoformat() if value_json.temperature is defined and value_json.temperature is not none and is_number(value_json.temperature) else previous -%}
+          {{ dict(duepi_sample_timestamp=reported) | to_json }}

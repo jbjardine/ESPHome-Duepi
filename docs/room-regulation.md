@@ -89,13 +89,48 @@ custom entity picker and lets the source be changed without compiling, but it
 requires copying the entity ID accurately. Clear the field to stop requests
 and restore the legacy relay input path. The inline template reads the source
 value and C/F unit, converts the temperature to Celsius, then sends `temp_c`
-and the age derived from `last_reported`; polling does not make an old source
+and the age derived from its report timestamp; polling does not make an old source
 reading fresh. Changing the source resets its freshness and PI history; the
 firmware waits for a report from the newly selected source before using it.
 The firmware still enforces the maximum age. Package
 configuration and template tests do not prove that a real device's request
 and callback complete end to end; verify that transport during the authorized
 field test before enabling compensation.
+
+### Stable temperatures and source loss
+
+An unchanged temperature is still a new measurement when the sensor actually
+reports it again. Home Assistant's `last_reported` is the last HA state write;
+some integrations, including MQTT, skip that write for identical values.
+
+If the source has a `duepi_sample_timestamp` attribute, Duepi uses that report
+date (ISO 8601, including its time zone) instead of `last_reported`. An invalid,
+missing-value or future attribute is rejected; a recent HA state write cannot
+override an old or invalid explicit date. Sources without that attribute retain
+the existing `last_reported` behavior. This is a source contract, not automatic
+detection of whether an arbitrary integration still has a working sensor.
+
+The default source maximum remains **15 minutes**, independently of the
+**180-second HA relay lease**. A new report at the same temperature gets a new
+sample ID. HA's 60-second polling keeps the same sample ID and advances its age;
+it neither refreshes the measurement nor advances PI integration.
+
+For a Zigbee2MQTT source, merge the per-device options in
+[`room-source-zigbee2mqtt.yaml`](../examples/room-source-zigbee2mqtt.yaml), using
+the existing device address/name/topic. This mapping excludes temperature from
+the state cache, so humidity/battery messages and startup cache publications
+cannot acquire a new temperature timestamp. Z2M can insert `temperature: null`
+for a missing value; the mapping ignores that placeholder and retains the old
+temperature and timestamp. Keep the device state topic non-retained and clear
+any retained state left by an older configuration before commissioning.
+
+Configure a real periodic temperature report comfortably below the 15-minute
+limit, for example a maximum interval of **300 seconds**. A sleeping battery
+sensor may need waking to accept this setting. Confirm both the reporting
+readback and successive actual reports, including equal temperatures. An
+acknowledgment alone is insufficient. Do not compensate for an incompatible
+sensor by renewing its timestamp on every HA poll or every humidity message.
+Leave regulation Local until source freshness is demonstrated.
 
 When the regulation mode is **Local**, a native Lovelace conditional card can
 explain why room compensation is paused and how to resume it. Replace the
