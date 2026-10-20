@@ -1,0 +1,40 @@
+{
+  "product_commit": "e361eda481fbc2169383418dda57a5aeee84b323",
+  "esphome_version": "2026.9.1",
+  "purpose": "Compile validation only; dummy credentials; do not flash these artifacts.",
+  "artifacts": {
+    "duepi-room-legacy-build": {
+      "node": "duepi-room-legacy-build",
+      "ota_bytes": 520816,
+      "sha256": "549b8df0aba98c42c2c9c6ca0eb784b1835bfb7c7c854c49ccd30617585cee22",
+      "path": "tests/fixtures/.esphome/tests/fixtures/.esphome/legacy-esp01-1m/.pioenvs/duepi-room-legacy-build/firmware.ota.bin",
+      "gzip9_bytes": 363841,
+      "rounded_raw": 524288,
+      "rounded_gzip": 364544
+    },
+    "duepi-room-opt-in-build": {
+      "node": "duepi-room-opt-in-build",
+      "ota_bytes": 549664,
+      "sha256": "2d69defb57b8a753a96cb52e7dcdcab2620adcc6332ce5539142ea0086d1073a",
+      "path": "tests/fixtures/.esphome/tests/fixtures/.esphome/room-esp01-1m/.pioenvs/duepi-room-opt-in-build/firmware.ota.bin",
+      "gzip9_bytes": 383648,
+      "rounded_raw": 552960,
+      "rounded_gzip": 385024
+    },
+    "duepi-room-optin-f": {
+      "node": "duepi-room-optin-f",
+      "ota_bytes": 549664,
+      "sha256": "b939dbef83164652f02bff5f651fdb1ae4310d62f85dcfa817d0392c0294ba67",
+      "path": "tests/fixtures/.esphome/tests/fixtures/.esphome/room-esp01-1m-fahrenheit/.pioenvs/duepi-room-optin-f/firmware.ota.bin",
+      "gzip9_bytes": 383660,
+      "rounded_raw": 552960,
+      "rounded_gzip": 385024
+    },
+    "room-lolin-c3-mini": {
+      "node": "room-lolin-c3-mini",
+      "ota_bytes": 1029024,
+      "sha256": "4ef8b7285122df21b5cf777f019310bf26aabe84221e08999c8c42ca14591d48",
+      "path": "tests/fixtures/.esphome/tests/fixtures/.esphome/room-lolin-c3-mini/build/firmware.ota.bin"
+    }
+  }
+}
