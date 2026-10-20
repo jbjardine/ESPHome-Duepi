@@ -29,6 +29,7 @@ trap 'rm -rf "$build_dir"' EXIT HUP INT TERM
   -I "$arduinojson_root" \
   "$repo_root/tests/native/test_duepi_room.cpp" \
   "$repo_root/tests/native/esphome_log_stub.cpp" \
+  "$esphome_root/components/script/script.cpp" \
   "$repo_root/components/duepi_room/controller.cpp" \
   "$repo_root/components/duepi_room/relay_parser.cpp" \
   "$esphome_root/components/json/json_util.cpp" \

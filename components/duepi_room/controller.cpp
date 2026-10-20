@@ -141,6 +141,17 @@ void Controller::observe_native_target(float target_c) {
     return;
   }
 
+  if (this->bridge_baseline_valid_) {
+    const bool changed_target = std::fabs(target_c - this->bridge_baseline_target_) >= TARGET_EPSILON;
+    this->bridge_baseline_valid_ = false;
+    this->bridge_latest_target_valid_ = false;
+    this->last_readback_target_ = target_c;
+    this->last_readback_valid_ = true;
+    this->divergent_target_count_ = 0;
+    if (changed_target)
+      this->set_mode(Mode::LOCAL_ONLY);
+  }
+
   if (this->pending_confirmation_) {
     if (close_enough(target_c, static_cast<float>(this->emitted_target_))) {
       this->pending_confirmation_ = false;
@@ -199,8 +210,13 @@ bool Controller::observe_relay(const RelayMessage &message) {
       if (character < '0' || character > '9')
         valid_message = false;
     }
-  } else if (message.has_temperature || !message.sample_id.empty()) {
-    valid_message = false;
+  } else {
+    if (message.has_temperature || message.sample_id.size() > 20)
+      valid_message = false;
+    for (const char character : message.sample_id) {
+      if (character < '0' || character > '9')
+        valid_message = false;
+    }
   }
 
   if (!valid_message) {
@@ -280,11 +296,13 @@ void Controller::observe_bridge_connected(bool connected) {
     return;
   if (connected) {
     this->bridge_connected_ = true;
-    this->bridge_baseline_valid_ = this->native_target_valid_ &&
-                                   this->fresh_(this->native_target_valid_, this->native_target_ms_, this->now_());
-    this->bridge_baseline_target_ = this->native_target_;
+    if (!this->bridge_baseline_valid_) {
+      this->bridge_baseline_valid_ = this->native_target_valid_ &&
+                                     this->fresh_(this->native_target_valid_, this->native_target_ms_, this->now_());
+      this->bridge_baseline_target_ = this->native_target_;
+    }
     this->bridge_latest_target_valid_ = this->bridge_baseline_valid_;
-    this->bridge_latest_target_ = this->native_target_;
+    this->bridge_latest_target_ = this->bridge_baseline_target_;
     this->pending_confirmation_ = false;
     this->command_unconfirmed_ = false;
     this->reset_integral_();
@@ -302,7 +320,7 @@ void Controller::observe_bridge_connected(bool connected) {
   this->stove_phase_valid_ = false;
   this->native_target_valid_ = false;
   this->last_readback_valid_ = false;
-  this->bridge_baseline_valid_ = false;
+  this->bridge_baseline_valid_ = this->bridge_baseline_valid_ && !changed_target;
   this->bridge_latest_target_valid_ = false;
   this->clear_source_();
   this->reset_integral_();

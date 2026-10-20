@@ -41,6 +41,8 @@ script:
               std::vector<uint8_t> vec(str.begin(), str.end());
               return vec;
   - id: STOVE_SET_TARGET
+    # A newer manual target must replace any older command still waiting.
+    mode: restart
     parameters:
       target_in: int
       automatic: bool
@@ -143,6 +145,8 @@ script:
             - lambda: |-
                 id(debug).publish_state("Official app connected: target temperature refused");
   - id: STOVE_SET_MODE
+    # Preserve a later OFF if HEAT is still waiting for the UART.
+    mode: restart
     parameters:
       heat: bool
     then:

@@ -1,5 +1,17 @@
 #include "components/duepi_room/controller.h"
 #include "components/duepi_room/relay_parser.h"
+#include "esphome/core/application.h"
+
+namespace esphome {
+class TestSourceGuard {
+ public:
+  explicit TestSourceGuard(const LogString *) {}
+};
+}  // namespace esphome
+
+#define ScopedSourceGuard TestSourceGuard
+#include "esphome/components/script/script.h"
+#undef ScopedSourceGuard
 
 #include <cmath>
 #include <cstdint>
@@ -116,6 +128,101 @@ struct Fixture {
   }
 };
 
+class HeldTargetWriter final : public esphome::Action<int, bool> {
+ public:
+  struct Call {
+    int target;
+    bool automatic;
+    unsigned int token;
+  };
+
+  void play_complex(const int &target, const bool &automatic) override {
+    this->num_running_++;
+    this->current_ = {target, automatic, ++this->next_token_};
+    this->calls.push_back(this->current_);
+    this->active_ = true;
+    // An automatic call is held before emission, like the whole-poll wait.
+    // A manual call emits immediately, then remains active through UART-idle wait.
+    if (!automatic)
+      this->emitted.push_back(target);
+  }
+
+  bool release(unsigned int token) {
+    if (!this->active_ || this->current_.token != token)
+      return false;
+    if (this->current_.automatic)
+      this->emitted.push_back(this->current_.target);
+    const Call completed = this->current_;
+    this->active_ = false;
+    this->play_next_(completed.target, completed.automatic);
+    return true;
+  }
+
+  std::vector<Call> calls;
+  std::vector<int> emitted;
+  unsigned int cancelled{0};
+
+ protected:
+  void play(const int &, const bool &) override {}
+
+  void stop() override {
+    if (this->active_)
+      this->cancelled++;
+    this->active_ = false;
+  }
+
+ private:
+  Call current_{};
+  unsigned int next_token_{0};
+  bool active_{false};
+};
+
+class HeldModeWriter final : public esphome::Action<bool> {
+ public:
+  struct Call {
+    bool heat;
+    unsigned int token;
+  };
+
+  void play_complex(const bool &heat) override {
+    this->num_running_++;
+    this->current_ = {heat, ++this->next_token_};
+    this->calls.push_back(this->current_);
+    this->active_ = true;
+    if (!heat)
+      this->commands.push_back(false);
+  }
+
+  bool release(unsigned int token) {
+    if (!this->active_ || this->current_.token != token)
+      return false;
+    if (this->current_.heat)
+      this->commands.push_back(true);
+    const Call completed = this->current_;
+    this->active_ = false;
+    this->play_next_(completed.heat);
+    return true;
+  }
+
+  std::vector<Call> calls;
+  std::vector<bool> commands;
+  unsigned int cancelled{0};
+
+ protected:
+  void play(const bool &) override {}
+
+  void stop() override {
+    if (this->active_)
+      this->cancelled++;
+    this->active_ = false;
+  }
+
+ private:
+  Call current_{};
+  unsigned int next_token_{0};
+  bool active_{false};
+};
+
 TEST(relay_parser_accepts_the_frozen_v1_message) {
   RelayMessage parsed;
   ParseError error;
@@ -141,6 +248,27 @@ TEST(relay_parser_accepts_an_explicit_invalid_source_without_temperature) {
   CHECK(!parsed.valid);
   CHECK(!parsed.has_temperature);
   CHECK(parsed.sample_id.empty());
+}
+
+TEST(invalid_relay_with_last_reported_id_allows_the_initial_fallback) {
+  Fixture fixture;
+  fixture.prepare_without_relay();
+  const std::string payload =
+      R"({"v":1,"generation":"0123456789abcdef0123456789abcdef","seq":1,"valid":false,"age_s":0,"sample_id":"1792485000123456"})";
+  RelayMessage parsed;
+  ParseError error{};
+
+  CHECK(parse_relay_message(payload, &parsed, &error));
+  CHECK(!parsed.valid);
+  CHECK(!parsed.has_temperature);
+  CHECK(parsed.sample_id == "1792485000123456");
+  CHECK(fixture.controller.poll().status == Status::WAITING_SOURCE);
+  CHECK(fixture.controller.observe_relay(parsed));
+
+  const Decision fallback = fixture.controller.poll();
+  CHECK(fallback.status == Status::FALLBACK);
+  CHECK(fallback.target_requested);
+  CHECK(fallback.target == 20);
 }
 
 TEST(relay_parser_ignores_unknown_fields_but_rejects_malformed_json) {
@@ -479,6 +607,85 @@ TEST(manual_native_target_and_two_stable_divergent_readbacks_latch_local) {
   CHECK_NEAR(readback.controller.poll().native_target, 24.0, 0.001);
 }
 
+TEST(manual_priority_restarts_the_writer_and_preserves_the_latest_target) {
+  Fixture fixture;
+  fixture.prepare();
+  const Decision automatic = fixture.controller.poll();
+  CHECK(automatic.target_requested);
+  CHECK(fixture.controller.authorize_rf2_emission(automatic.target));
+
+  esphome::script::RestartScript<int, bool> writer_script;
+  esphome::Automation<int, bool> writer_actions(&writer_script);
+  HeldTargetWriter writer;
+  writer_actions.add_action(&writer);
+
+  writer_script.execute(automatic.target, true);
+  const unsigned int stale_auto_token = writer.calls.back().token;
+  CHECK(writer.emitted.empty());
+
+  fixture.controller.observe_manual_native_target(27.0F);
+  fixture.controller.on_rf2_not_emitted();
+  CHECK(fixture.controller.mode() == Mode::LOCAL_ONLY);
+  writer_script.execute(27, false);
+
+  fixture.controller.observe_manual_native_target(29.0F);
+  fixture.controller.on_rf2_not_emitted();
+  writer_script.execute(29, false);
+
+  // With SingleScript these are discarded while the first automatic wait is
+  // active. RestartScript must stop it and keep the most recent manual call.
+  CHECK(writer.calls.size() == 3);
+  CHECK(writer.cancelled == 2);
+  CHECK(writer.emitted == std::vector<int>({27, 29}));
+  CHECK(writer.calls.back().target == 29);
+  CHECK(!writer.calls.back().automatic);
+  CHECK(!writer.release(stale_auto_token));
+  CHECK(!fixture.controller.authorize_rf2_emission(automatic.target));
+  CHECK(fixture.controller.poll().status == Status::LOCAL_ONLY);
+  CHECK(writer.release(writer.calls.back().token));
+  CHECK(!writer_script.is_action_running());
+}
+
+TEST(explicit_off_replaces_a_heat_command_waiting_for_uart) {
+  esphome::script::RestartScript<bool> mode_script;
+  esphome::Automation<bool> mode_actions(&mode_script);
+  HeldModeWriter writer;
+  mode_actions.add_action(&writer);
+
+  mode_script.execute(true);
+  const unsigned int stale_heat_token = writer.calls.back().token;
+  mode_script.execute(false);
+
+  // A pending HEAT must not cause the user's later OFF execute to be dropped.
+  CHECK(writer.calls.size() == 2);
+  CHECK(writer.cancelled == 1);
+  CHECK(writer.commands == std::vector<bool>({false}));
+  CHECK(!writer.release(stale_heat_token));
+  CHECK(writer.release(writer.calls.back().token));
+  CHECK(!mode_script.is_action_running());
+}
+
+TEST(manual_target_cancels_an_outstanding_automatic_offer_before_stale_resume) {
+  Fixture fixture;
+  fixture.prepare();
+
+  const Decision automatic = fixture.controller.poll();
+  CHECK(automatic.target_requested);
+  CHECK(fixture.controller.authorize_rf2_emission(automatic.target));
+
+  fixture.controller.observe_manual_native_target(28.0F);
+  CHECK(fixture.controller.mode() == Mode::LOCAL_ONLY);
+  CHECK_NEAR(fixture.controller.poll().native_target, 28.0, 0.001);
+  CHECK(!fixture.controller.authorize_rf2_emission(automatic.target));
+
+  // The already-waiting automatic script must close its rejected attempt
+  // without turning it into an emitted command or pending confirmation.
+  fixture.controller.on_rf2_not_emitted();
+  CHECK(fixture.controller.mode() == Mode::LOCAL_ONLY);
+  CHECK(!fixture.controller.authorize_rf2_emission(automatic.target));
+  CHECK(fixture.controller.poll().status == Status::LOCAL_ONLY);
+}
+
 TEST(bridge_blocks_writes_and_disconnect_requires_fresh_observations) {
   Fixture fixture;
   fixture.prepare();
@@ -490,7 +697,7 @@ TEST(bridge_blocks_writes_and_disconnect_requires_fresh_observations) {
 
   fixture.controller.observe_raw_stove_temperature(23.0F);
   fixture.controller.observe_raw_stove_phase(0x0201);
-  fixture.controller.observe_native_target(23.0F);
+  fixture.controller.observe_native_target(20.0F);
   fixture.send_sample(2, 20.0F, "1792485060123456");
   CHECK(fixture.controller.poll().status == Status::REGULATING);
 }
@@ -503,6 +710,29 @@ TEST(bridge_target_change_latches_local_on_disconnect) {
   fixture.controller.observe_bridge_connected(false);
   CHECK(fixture.controller.mode() == Mode::LOCAL_ONLY);
   CHECK(fixture.controller.poll().status == Status::LOCAL_ONLY);
+}
+
+TEST(bridge_disconnect_compares_the_first_fresh_readback_with_the_preserved_baseline) {
+  Fixture changed;
+  changed.prepare();
+  changed.controller.observe_bridge_connected(true);
+  changed.controller.observe_bridge_connected(false);
+  changed.controller.observe_native_target(24.0F);
+  CHECK(changed.controller.mode() == Mode::LOCAL_ONLY);
+  CHECK(changed.controller.poll().status == Status::LOCAL_ONLY);
+
+  Fixture unchanged;
+  unchanged.prepare();
+  unchanged.controller.observe_bridge_connected(true);
+  unchanged.controller.observe_bridge_connected(false);
+  unchanged.controller.observe_native_target(20.0F);
+  CHECK(unchanged.controller.mode() == Mode::COMPENSATION);
+  CHECK(unchanged.controller.poll().status == Status::WAITING_STOVE);
+  unchanged.controller.observe_raw_stove_temperature(23.0F);
+  unchanged.controller.observe_raw_stove_phase(0x0201);
+  unchanged.controller.observe_native_target(20.0F);
+  unchanged.send_sample(2, 20.0F, "1792485060123456");
+  CHECK(unchanged.controller.poll().status == Status::REGULATING);
 }
 
 TEST(explicit_off_latches_local_but_heat_needs_a_new_postcommand_phase_observation) {

@@ -190,9 +190,9 @@ compresses OTA uploads with gzip level 9. The fixture sizes are:
 
 | Image | .bin | gzip OTA | .bin rounded | gzip rounded |
 | --- | ---: | ---: | ---: | ---: |
-| Legacy ESP-01 | 520,816 | 363,843 | 524,288 | 364,544 |
-| Optional C | 549,536 | 383,490 | 552,960 | 385,024 |
-| Optional F | 549,536 | 383,498 | 552,960 | 385,024 |
+| Legacy ESP-01 | 520,816 | 363,841 | 524,288 | 364,544 |
+| Optional C | 549,664 | 383,648 | 552,960 | 385,024 |
+| Optional F | 549,664 | 383,660 | 552,960 | 385,024 |
 
 Legacy→optional C or F uses 909,312 bytes and leaves 118,784 bytes. Optional
 C/F→optional C/F uses 937,984 bytes and leaves 90,112 bytes. This assumes the

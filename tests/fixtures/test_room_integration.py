@@ -33,6 +33,25 @@ class RoomIntegrationContracts(unittest.TestCase):
         self.assertNotIn("RF000", writer)
         self.assertNotIn("set_target_temperature", room_package)
 
+    def test_target_writer_restarts_for_the_latest_manual_change(self) -> None:
+        writer = yaml_script("STOVE_SET_TARGET")
+        mode_writer = yaml_script("STOVE_SET_MODE")
+
+        self.assertRegex(writer, r"(?m)^    mode: restart$")
+        self.assertNotRegex(writer, r"(?m)^    max_runs:")
+        self.assertRegex(mode_writer, r"(?m)^    mode: restart$")
+        self.assertNotRegex(mode_writer, r"(?m)^    max_runs:")
+
+    def test_manual_override_cancels_the_pending_automatic_offer_before_execution(self) -> None:
+        climate = read("components/climate.yaml")
+        manual_path = climate[climate.index("target_temperature_change_action:"):]
+
+        observe = manual_path.index("duepi_room_observe_manual_native_target")
+        cancel = manual_path.index("duepi_room_on_rf2_not_emitted")
+        execute = manual_path.index("id: STOVE_SET_TARGET")
+        self.assertLess(observe, cancel)
+        self.assertLess(cancel, execute)
+
     def test_opt_in_writer_and_rc6000_gate_share_normalized_celsius_limits(self) -> None:
         writer = yaml_script("STOVE_SET_TARGET")
         uart = read("components/uart.yaml")

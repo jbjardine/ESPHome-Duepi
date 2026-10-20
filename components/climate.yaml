@@ -25,7 +25,9 @@ climate:
               - lambda: |-
                   #ifdef USE_DUEPI_ROOM
                   extern void duepi_room_observe_manual_native_target(float target_c);
+                  extern void duepi_room_on_rf2_not_emitted();
                   duepi_room_observe_manual_native_target(id(Stove).target_temperature);
+                  duepi_room_on_rf2_not_emitted();
                   #endif
               - if:
                   condition:
