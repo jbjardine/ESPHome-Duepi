@@ -116,6 +116,53 @@ struct Fixture {
   }
 };
 
+template<typename T> void exercise_native_source_session(T &controller) {
+  if constexpr (requires(T &candidate, const std::string &generation) {
+                  candidate.begin_native_source_session(generation);
+                }) {
+    constexpr char FIRST_GENERATION[] = "0123456789abcdef0123456789abcdef";
+    constexpr char NEXT_GENERATION[] = "fedcba9876543210fedcba9876543210";
+    CHECK(controller.begin_native_source_session(FIRST_GENERATION));
+    CHECK(controller.observe_relay(message(1, 18.0F, "1792485000123456", 0, FIRST_GENERATION)));
+    CHECK(controller.poll().status == Status::REGULATING);
+
+    CHECK(controller.begin_native_source_session(NEXT_GENERATION));
+    const Decision waiting = controller.poll();
+    CHECK(waiting.status == Status::WAITING_SOURCE);
+    CHECK(!waiting.target_requested);
+
+    CHECK(!controller.observe_relay(message(2, 18.0F, "1792485060123456", 0, FIRST_GENERATION)));
+    CHECK(controller.poll().status == Status::WAITING_SOURCE);
+
+    RelayMessage unavailable;
+    unavailable.version = 1;
+    unavailable.generation = NEXT_GENERATION;
+    unavailable.sequence = 1;
+    unavailable.valid = false;
+    unavailable.age_seconds = 0;
+    unavailable.sample_id = "1792485120123456";
+    CHECK(controller.observe_relay(unavailable));
+    CHECK(controller.poll().status == Status::FALLBACK);
+  } else {
+    CHECK(false && "Controller lacks native source session support");
+  }
+}
+
+template<typename T> void exercise_native_source_session_preserves_rf2_confirmation(T &controller) {
+  if constexpr (requires(T &candidate, const std::string &generation) {
+                  candidate.begin_native_source_session(generation);
+                }) {
+    constexpr char NEXT_GENERATION[] = "fedcba9876543210fedcba9876543210";
+    const Decision offer = controller.poll();
+    CHECK(offer.target_requested);
+    CHECK(controller.on_rf2_emitted(offer.target));
+    CHECK(controller.begin_native_source_session(NEXT_GENERATION));
+    CHECK(controller.poll().status == Status::AWAITING_CONFIRMATION);
+  } else {
+    CHECK(false && "Controller lacks native source session support");
+  }
+}
+
 class HeldTargetWriter final : public esphome::Action<int, bool> {
  public:
   struct Call {
@@ -496,6 +543,34 @@ TEST(no_initial_source_waits_for_an_accepted_postboot_packet_before_fallback) {
   const Decision fallback = fixture.controller.poll();
   CHECK(fallback.status == Status::FALLBACK);
   CHECK(fallback.target_requested);
+}
+
+TEST(native_source_session_rejects_late_generation_until_new_source_reports) {
+  Fixture fixture;
+  fixture.prepare_without_relay();
+  exercise_native_source_session(fixture.controller);
+}
+
+TEST(native_source_session_preserves_an_emitted_rf2_confirmation) {
+  Fixture fixture;
+  fixture.prepare(Mode::COMPENSATION, 20.0F, 18.0F, 23.0F, 23.0F);
+  exercise_native_source_session_preserves_rf2_confirmation(fixture.controller);
+}
+
+TEST(native_source_session_can_be_ended_for_the_legacy_relay_path) {
+  Fixture fixture;
+  fixture.prepare();
+  constexpr char NATIVE_GENERATION[] = "fedcba9876543210fedcba9876543210";
+  CHECK(fixture.controller.begin_native_source_session(NATIVE_GENERATION));
+  CHECK(!fixture.controller.begin_native_source_session(NATIVE_GENERATION));
+  CHECK(!fixture.controller.begin_native_source_session("bad-generation"));
+
+  CHECK(fixture.controller.observe_relay(message(1, 18.0F, "1792485060123456", 0, NATIVE_GENERATION)));
+  CHECK(fixture.controller.poll().status == Status::REGULATING);
+  fixture.controller.end_native_source_session();
+
+  CHECK(fixture.controller.observe_relay(message(1, 19.0F, "1792485120123456")));
+  CHECK(fixture.controller.poll().status == Status::REGULATING);
 }
 
 TEST(malformed_relay_input_cannot_unlock_startup_fallback) {

@@ -1,8 +1,10 @@
 #include "duepi_room.h"
 
 #include "esphome/core/hal.h"
+#include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
+#include <array>
 #include <cmath>
 #include <set>
 
@@ -12,6 +14,7 @@ namespace duepi_room {
 namespace {
 
 constexpr char TAG[] = "duepi_room";
+constexpr uint32_t SOURCE_REQUEST_INTERVAL_MS = 60000;
 
 Config make_config(int native_min, int native_max, float fallback_target, uint32_t max_source_age_seconds, float kp,
                    float ki_per_hour, float integral_limit, float correction_limit) {
@@ -57,6 +60,20 @@ bool same_float(float left, float right) {
   if (std::isnan(left) || std::isnan(right))
     return std::isnan(left) && std::isnan(right);
   return std::fabs(left - right) < 0.01F;
+}
+
+bool valid_source_entity_id(const std::string &entity_id) {
+  if (entity_id.empty())
+    return true;
+  if (entity_id.compare(0, 7, "sensor.") != 0 || entity_id.size() <= 7)
+    return false;
+  for (size_t i = 7; i < entity_id.size(); i++) {
+    const char character = entity_id[i];
+    if (!((character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') ||
+          character == '_'))
+      return false;
+  }
+  return true;
 }
 
 bool parse_mode(const std::string &value, Mode *mode, size_t *index) {
@@ -111,6 +128,10 @@ void DuepiRoomComponent::setup() {
 }
 
 void DuepiRoomComponent::update() {
+  if (!this->source_entity_id_.empty() && this->api_client_count_ != 0 &&
+      (!this->source_request_sent_ || millis() - this->source_request_ms_ >= SOURCE_REQUEST_INTERVAL_MS))
+    this->request_source_measurement_();
+
   this->last_decision_ = this->controller_.poll();
   this->publish_decision_(this->last_decision_);
   if (this->last_decision_.target_requested) {
@@ -155,12 +176,106 @@ void DuepiRoomComponent::observe_raw_stove_phase(uint16_t phase) {
 }
 
 void DuepiRoomComponent::receive_relay_payload(const std::string &payload) {
+  // Keep the historical writable relay path only when no native source has
+  // been selected. The two transports must never race as competing sources.
+  if (!this->source_entity_id_.empty())
+    return;
+
   RelayMessage message;
   if (!parse_relay_message(payload, &message)) {
     this->controller_.invalidate_relay_source();
   } else {
     this->controller_.observe_relay(message);
   }
+}
+
+void DuepiRoomComponent::receive_native_source_payload(const std::string &payload) {
+  if (this->source_entity_id_.empty())
+    return;
+  RelayMessage message;
+  if (!parse_relay_message(payload, &message))
+    return;
+  this->controller_.observe_relay(message);
+  this->publish_decision_(this->controller_.poll());
+}
+
+bool DuepiRoomComponent::set_source_entity_id(const std::string &entity_id) {
+  if (!valid_source_entity_id(entity_id))
+    return false;
+  if (entity_id == this->source_entity_id_)
+    return true;
+
+  if (entity_id.empty()) {
+    this->source_entity_id_.clear();
+    this->source_generation_.clear();
+    this->source_sequence_ = 0;
+    this->source_request_sent_ = false;
+    this->controller_.end_native_source_session();
+    this->publish_decision_(this->controller_.poll());
+    return true;
+  }
+
+  if (!this->renew_source_generation_())
+    return false;
+  this->source_entity_id_ = entity_id;
+  this->source_request_sent_ = false;
+  this->publish_decision_(this->controller_.poll());
+  if (this->api_client_count_ != 0)
+    this->request_source_measurement_();
+  return true;
+}
+
+void DuepiRoomComponent::on_api_client_connected() {
+  if (this->api_client_count_ < UINT8_MAX)
+    this->api_client_count_++;
+  if (this->api_client_count_ == 1 && !this->source_entity_id_.empty()) {
+    this->source_request_sent_ = false;
+    this->request_source_measurement_();
+  }
+}
+
+void DuepiRoomComponent::on_api_client_disconnected() {
+  if (this->api_client_count_ != 0)
+    this->api_client_count_--;
+}
+
+bool DuepiRoomComponent::request_source_measurement_() {
+  if (this->source_entity_id_.empty() || this->api_client_count_ == 0 || this->source_request_triggers_.empty())
+    return false;
+
+  if (this->source_sequence_ == UINT32_MAX && !this->renew_source_generation_()) {
+    ESP_LOGW(TAG, "Could not rotate room-source generation at sequence limit");
+    return false;
+  }
+  this->source_sequence_++;
+  this->source_request_ms_ = millis();
+  this->source_request_sent_ = true;
+  for (auto *trigger : this->source_request_triggers_) {
+    if (trigger != nullptr)
+      trigger->trigger(this->source_entity_id_, this->source_generation_, this->source_sequence_);
+  }
+  return true;
+}
+
+bool DuepiRoomComponent::renew_source_generation_() {
+  static constexpr char HEX_DIGITS[] = "0123456789abcdef";
+  for (uint8_t attempt = 0; attempt < 2; attempt++) {
+    std::array<uint8_t, 16> bytes{};
+    if (!random_bytes(bytes.data(), bytes.size()))
+      return false;
+    std::string generation;
+    generation.reserve(32);
+    for (const uint8_t byte : bytes) {
+      generation.push_back(HEX_DIGITS[byte >> 4]);
+      generation.push_back(HEX_DIGITS[byte & 0x0F]);
+    }
+    if (!this->controller_.begin_native_source_session(generation))
+      continue;
+    this->source_generation_ = std::move(generation);
+    this->source_sequence_ = 0;
+    return true;
+  }
+  return false;
 }
 
 bool DuepiRoomComponent::set_room_target(float temperature_c) {

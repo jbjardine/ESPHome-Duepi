@@ -89,6 +89,10 @@ class DuepiRoomComponent : public PollingComponent {
   void set_mode_from_select(Mode mode);
   void request_native_mode(bool heat);
   void receive_relay_payload(const std::string &payload);
+  void receive_native_source_payload(const std::string &payload);
+  bool set_source_entity_id(const std::string &entity_id);
+  void on_api_client_connected();
+  void on_api_client_disconnected();
   bool set_room_target(float temperature_c);
   bool set_fallback_target(float temperature_c);
 
@@ -108,6 +112,9 @@ class DuepiRoomComponent : public PollingComponent {
 
   void add_rf2_target_trigger(Trigger<int> *trigger) { this->rf2_target_triggers_.push_back(trigger); }
   void add_native_mode_trigger(Trigger<bool> *trigger) { this->native_mode_triggers_.push_back(trigger); }
+  void add_source_request_trigger(Trigger<std::string, std::string, uint32_t> *trigger) {
+    this->source_request_triggers_.push_back(trigger);
+  }
 
   int native_min() const { return this->controller_.config().native_min; }
   int native_max() const { return this->controller_.config().native_max; }
@@ -127,6 +134,16 @@ class DuepiRoomComponent : public PollingComponent {
   std::vector<DuepiRoomDiagnosticSensor *> diagnostic_sensors_;
   std::vector<Trigger<int> *> rf2_target_triggers_;
   std::vector<Trigger<bool> *> native_mode_triggers_;
+  std::vector<Trigger<std::string, std::string, uint32_t> *> source_request_triggers_;
+  std::string source_entity_id_;
+  std::string source_generation_;
+  uint32_t source_sequence_{0};
+  uint32_t source_request_ms_{0};
+  uint8_t api_client_count_{0};
+  bool source_request_sent_{false};
+
+  bool request_source_measurement_();
+  bool renew_source_generation_();
 };
 
 class DuepiRoomClimate : public climate::Climate, public Component {
@@ -250,6 +267,11 @@ class RF2TargetTrigger : public Trigger<int> {
 class NativeModeCommandTrigger : public Trigger<bool> {
  public:
   explicit NativeModeCommandTrigger(DuepiRoomComponent *parent) { parent->add_native_mode_trigger(this); }
+};
+
+class SourceRequestTrigger : public Trigger<std::string, std::string, uint32_t> {
+ public:
+  explicit SourceRequestTrigger(DuepiRoomComponent *parent) { parent->add_source_request_trigger(this); }
 };
 
 }  // namespace duepi_room

@@ -13,6 +13,10 @@ RF2TargetTrigger = duepi_room_ns.class_("RF2TargetTrigger", automation.Trigger.t
 NativeModeCommandTrigger = duepi_room_ns.class_(
     "NativeModeCommandTrigger", automation.Trigger.template(cg.bool_)
 )
+SourceRequestTrigger = duepi_room_ns.class_(
+    "SourceRequestTrigger",
+    automation.Trigger.template(cg.std_string, cg.std_string, cg.uint32),
+)
 
 CONF_NATIVE_MIN = "native_min"
 CONF_NATIVE_MAX = "native_max"
@@ -26,6 +30,7 @@ CONF_INTEGRAL_LIMIT = "integral_limit"
 CONF_CORRECTION_LIMIT = "correction_limit"
 CONF_ON_RF2_TARGET = "on_rf2_target"
 CONF_ON_NATIVE_MODE_COMMAND = "on_native_mode_command"
+CONF_ON_SOURCE_REQUEST = "on_source_request"
 
 PI_SCHEMA = cv.Schema(
     {
@@ -74,6 +79,9 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_ON_NATIVE_MODE_COMMAND): automation.validate_automation(
                 {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(NativeModeCommandTrigger)}
             ),
+            cv.Optional(CONF_ON_SOURCE_REQUEST): automation.validate_automation(
+                {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(SourceRequestTrigger)}
+            ),
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -107,3 +115,11 @@ async def to_code(config):
     for conf in config.get(CONF_ON_NATIVE_MODE_COMMAND, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
         await automation.build_automation(trigger, [(cg.bool_, "heat")], conf)
+
+    for conf in config.get(CONF_ON_SOURCE_REQUEST, []):
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+        await automation.build_automation(
+            trigger,
+            [(cg.std_string, "source"), (cg.std_string, "generation"), (cg.uint32, "seq")],
+            conf,
+        )

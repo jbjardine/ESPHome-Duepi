@@ -20,6 +20,46 @@ def yaml_script(name: str) -> str:
 
 
 class RoomIntegrationContracts(unittest.TestCase):
+    def test_package_uses_native_api_action_round_trip(self) -> None:
+        room_package = read("components/packages/room_regulation.yaml")
+
+        self.assertIn("on_source_request:", room_package)
+        self.assertIn("data_template:", room_package)
+        self.assertIn("generation", room_package)
+        self.assertIn("seq", room_package)
+        self.assertRegex(room_package, r"(?m)^    - action: duepi_room_receive$")
+        self.assertIn("duepi_room_receive", room_package)
+        self.assertIn("homeassistant_services: true", room_package)
+        self.assertIn('return "esphome." + node_name + "_duepi_room_receive";', room_package)
+
+    def test_native_source_text_is_optional_persistent_and_validated(self) -> None:
+        package = read("components/packages/room_regulation.yaml")
+        component = read("components/duepi_room/duepi_room.cpp")
+        self.assertIn('id: duepi_room_source', package)
+        self.assertIn('name: "Room temperature sensor"', package)
+        self.assertIn("restore_value: true", package)
+        self.assertIn('initial_value: ""', package)
+        self.assertIn("pattern: '^$|^sensor\\.[a-z0-9_]+$'", package)
+        self.assertIn("bool DuepiRoomComponent::set_source_entity_id", component)
+        self.assertIn("valid_source_entity_id(entity_id)", component)
+        self.assertIn("request_source_measurement_()", component)
+
+    def test_native_source_takes_priority_without_removing_legacy_relay_support(self) -> None:
+        component = read("components/duepi_room/duepi_room.cpp")
+        legacy = re.search(
+            r"(?s)void DuepiRoomComponent::receive_relay_payload\([^)]*\) \{(.*?)\n\}",
+            component,
+        )
+        native = re.search(
+            r"(?s)void DuepiRoomComponent::receive_native_source_payload\([^)]*\) \{(.*?)\n\}",
+            component,
+        )
+        self.assertIsNotNone(legacy)
+        self.assertIsNotNone(native)
+        self.assertIn("if (!this->source_entity_id_.empty())", legacy.group(1))
+        self.assertIn("if (this->source_entity_id_.empty())", native.group(1))
+        self.assertIn("controller_.observe_relay(message)", native.group(1))
+
     def test_legacy_and_automatic_targets_share_one_rf2_writer(self) -> None:
         climate = read("components/climate.yaml")
         room_package = read("components/packages/room_regulation.yaml")

@@ -18,6 +18,47 @@ duepi_room:
       - script.execute:
           id: STOVE_SET_MODE
           heat: !lambda 'return heat;'
+  on_source_request:
+    then:
+      - homeassistant.action:
+          action: !lambda |-
+            std::string node_name = App.get_name();
+            for (char &character : node_name) {
+              if (character == '-')
+                character = '_';
+            }
+            return "esphome." + node_name + "_duepi_room_receive";
+          data_template:
+            payload: >-
+              {%- set source_state = states[source] if source else none -%}
+              {%- set last_reported = source_state.last_reported if source_state else none -%}
+              {%- set reported_ts = as_timestamp(last_reported, default=none) if last_reported else none -%}
+              {%- set now_ts = as_timestamp(now(), default=none) -%}
+              {%- set age_raw = now_ts - reported_ts if now_ts is not none and reported_ts is not none else none -%}
+              {%- set age_ok = age_raw is not none and age_raw >= 0 and age_raw <= 4294967295 -%}
+              {%- set age_s = age_raw | int if age_ok else 0 -%}
+              {%- set sample_candidate = ((reported_ts * 1000000) | int) | string if reported_ts is not none else '' -%}
+              {%- set sample_id = sample_candidate if sample_candidate.isdigit() and sample_candidate | length <= 20 else '' -%}
+              {%- set raw = source_state.state if source_state else '' -%}
+              {%- set unit = source_state.attributes.get('unit_of_measurement', '') if source_state else '' -%}
+              {%- set numeric = is_number(raw) -%}
+              {%- set value = raw | float if numeric else 0 -%}
+              {%- set unit_ok = unit in ['C', '°C', 'F', '°F'] -%}
+              {%- if unit in ['F', '°F'] -%}
+                {%- set temp_c = (value - 32) * 5 / 9 -%}
+              {%- else -%}
+                {%- set temp_c = value -%}
+              {%- endif -%}
+              {%- set valid = source_state is not none and raw not in ['unknown', 'unavailable'] and not source_state.attributes.get('restored', false) and numeric and is_number(temp_c) and unit_ok and age_ok and sample_id != '' -%}
+              {%- if valid -%}
+                {{ dict(v=1, generation=generation, seq=seq | int, valid=true, temp_c=temp_c, age_s=age_s, sample_id=sample_id) | to_json }}
+              {%- else -%}
+                {{ dict(v=1, generation=generation, seq=seq | int, valid=false, age_s=age_s, sample_id=sample_id) | to_json }}
+              {%- endif -%}
+          variables:
+            source: !lambda 'return source;'
+            generation: !lambda 'return generation;'
+            seq: !lambda 'return seq;'
 
 climate:
   - platform: duepi_room
@@ -68,6 +109,41 @@ text_sensor:
     name: "Room regulation status"
 
 text:
+  - platform: template
+    id: duepi_room_source
+    name: "Room temperature sensor"
+    mode: text
+    min_length: 0
+    max_length: 255
+    pattern: '^$|^sensor\.[a-z0-9_]+$'
+    optimistic: false
+    restore_value: true
+    initial_value: ""
+    set_action:
+      - lambda: |-
+          if (id(duepi_room_main).set_source_entity_id(x))
+            id(duepi_room_source).publish_state(x);
   - platform: duepi_room
     duepi_room_id: duepi_room_main
     id: duepi_room_relay
+
+esphome:
+  on_boot:
+    - priority: -100
+      then:
+        - lambda: id(duepi_room_main).set_source_entity_id(id(duepi_room_source).state);
+
+api:
+  homeassistant_services: true
+  on_client_connected:
+    then:
+      - lambda: id(duepi_room_main).on_api_client_connected();
+  on_client_disconnected:
+    then:
+      - lambda: id(duepi_room_main).on_api_client_disconnected();
+  actions:
+    - action: duepi_room_receive
+      variables:
+        payload: string
+      then:
+        - lambda: id(duepi_room_main).receive_native_source_payload(payload);

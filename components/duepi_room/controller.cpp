@@ -19,6 +19,16 @@ bool close_enough(float left, float right, float tolerance = STABLE_TARGET_EPSIL
   return std::fabs(left - right) <= tolerance;
 }
 
+bool valid_generation(const std::string &generation) {
+  if (generation.size() != 32)
+    return false;
+  for (const char character : generation) {
+    if (!((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')))
+      return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 Controller::Controller(Config config, MonotonicClock clock) : config_(config), clock_(std::move(clock)) {
@@ -197,6 +207,12 @@ void Controller::observe_native_target(float target_c) {
 }
 
 bool Controller::observe_relay(const RelayMessage &message) {
+  // A native source has a locally chosen session token. Responses from an old
+  // HA action can arrive after a source switch; ignore them without aging or
+  // invalidating the newly selected source.
+  if (this->native_source_session_active_ && message.generation != this->generation_)
+    return false;
+
   bool valid_message = message.version == 1 && message.generation.size() == 32 && message.sequence != 0;
   for (const char character : message.generation) {
     if (!((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')))
@@ -260,6 +276,42 @@ bool Controller::observe_relay(const RelayMessage &message) {
   if (new_sample)
     this->cancel_request_();
   return true;
+}
+
+bool Controller::begin_native_source_session(const std::string &generation) {
+  if (!valid_generation(generation) ||
+      (this->native_source_session_active_ && generation == this->generation_))
+    return false;
+
+  this->native_source_session_active_ = true;
+  this->generation_ = generation;
+  this->last_sequence_ = 0;
+  this->has_sequence_ = false;
+  this->source_ = RelayMessage{};
+  this->source_packet_ms_ = 0;
+  this->source_present_ = false;
+  this->accepted_relay_packet_seen_ = false;
+  this->fallback_done_ = false;
+  this->reset_integral_();
+  this->cancel_request_();
+  // Do not clear pending_confirmation_, command_unconfirmed_, or the last
+  // emitted write timestamp: a request that reached the stove still needs its
+  // ordinary RC6000 confirmation and write interval.
+  return true;
+}
+
+void Controller::end_native_source_session() {
+  this->native_source_session_active_ = false;
+  this->generation_.clear();
+  this->last_sequence_ = 0;
+  this->has_sequence_ = false;
+  this->source_ = RelayMessage{};
+  this->source_packet_ms_ = 0;
+  this->source_present_ = false;
+  this->accepted_relay_packet_seen_ = false;
+  this->fallback_done_ = false;
+  this->reset_integral_();
+  this->cancel_request_();
 }
 
 void Controller::invalidate_relay_source() {

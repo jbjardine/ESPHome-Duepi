@@ -88,6 +88,8 @@ class Controller {
   void observe_stove_alarm(bool active);
   void observe_native_target(float target_c);
   bool observe_relay(const RelayMessage &message);
+  bool begin_native_source_session(const std::string &generation);
+  void end_native_source_session();
   void invalidate_relay_source();
   void observe_manual_native_target(float target_c);
   void on_explicit_mode_command(bool heat);
@@ -153,6 +155,7 @@ class Controller {
   RelayMessage source_;
   uint32_t source_packet_ms_{0};
   bool accepted_relay_packet_seen_{false};
+  bool native_source_session_active_{false};
   bool source_present_{false};
   std::string generation_;
   uint32_t last_sequence_{0};

@@ -63,12 +63,39 @@ The optional package adds these entities:
 | `Room target` climate | Holds the desired room temperature independently from the stove's native setpoint. Its displayed Heat/Off follows the latest recognized raw stove phase; an unknown phase leaves the last display unchanged. This is observation only. Explicit Heat and Off calls use the existing native mode path. Off immediately selects Local. Heat keeps the selected mode and does not activate regulation from Local. |
 | `Room regulation mode` select | **Local**, **Compensation**, or **Compensation + PI**. This is the armed/manual regulation choice. Local leaves native setpoint choices alone. Compensation applies the room-temperature offset. PI adds a bounded integral correction. |
 | `Reactivate room compensation` button | Selects **Compensation** through the existing mode selector. It does not send a Heat/Off command or turn on the stove. |
+| `Room temperature sensor` text (`duepi_room_source`) | Optional Home Assistant `sensor.*` entity ID used for room measurements. It starts empty, is restored across reboot, and can be changed on the device without recompiling. Empty disables native room-source requests. |
 | `Room fallback target` number | Native setpoint used once when the selected regulation mode loses a usable room source. Default: 20 °C (68 °F); it is limited to the configured stove minimum and maximum. |
 | `Room regulation status` text sensor | Operating reason: `local`, `waiting_stove`, `waiting_source`, `regulating`, `fallback`, `bridge`, `stove_inactive`, `awaiting_confirmation`, `command_unconfirmed`, or `uart_busy`. |
 | `Room source age` sensor | Age reported by Home Assistant for the selected room sensor, in seconds. The firmware's default maximum is 15 minutes. |
 | `Room PI correction` sensor | Current bounded PI correction as a Celsius difference (`Δ°C`), without an absolute-temperature device class. It stays zero in Local and Compensation modes. |
 | `Room computed native target` sensor | The computed native setpoint before the RF2 write request. |
-| `Duepi Room Relay v1` text | Versioned JSON relay used by the Home Assistant companion. Do not rename or replace this entity. |
+| `Duepi Room Relay v1` text | Legacy versioned JSON relay input retained for compatibility. It is ignored while `Room temperature sensor` is non-empty. Do not use both transports for the same source. |
+
+The optional package reads the selected source through the standard ESPHome
+Home Assistant integration. Enable the per-device `allow_service_calls`
+permission for this ESPHome device in Home Assistant. The firmware requests a
+measurement after the API connects, after the source changes, and every
+60 seconds while a source is selected, including in **Local** mode. It uses
+the official `homeassistant.action` with an inline `data_template`; Home
+Assistant renders the template and calls
+`esphome.<device_name_with_hyphens_replaced_by_underscores>_duepi_room_receive`
+on the same device. That native action accepts one string named `payload`.
+No Home Assistant add-on, custom component, script, automation, token, or
+second connection is required.
+
+Enter the source's entity ID in `Room temperature sensor`, for example
+`sensor.living_room_temperature`. The text field is deliberate: it avoids a
+custom entity picker and lets the source be changed without compiling, but it
+requires copying the entity ID accurately. Clear the field to stop requests
+and restore the legacy relay input path. The inline template reads the source
+value and C/F unit, converts the temperature to Celsius, then sends `temp_c`
+and the age derived from `last_reported`; polling does not make an old source
+reading fresh. Changing the source resets its freshness and PI history; the
+firmware waits for a report from the newly selected source before using it.
+The firmware still enforces the maximum age. Package
+configuration and template tests do not prove that a real device's request
+and callback complete end to end; verify that transport during the authorized
+field test before enabling compensation.
 
 When the regulation mode is **Local**, a native Lovelace conditional card can
 explain why room compensation is paused and how to resume it. Replace the
@@ -87,17 +114,17 @@ card:
 ```
 
 The firmware calculates and exposes absolute temperatures in canonical
-Celsius. The HA companion accepts Celsius and Fahrenheit room sensors and
-normalizes their values before sending them to the ESPHome relay; Home Assistant
-can display the climate and absolute-temperature entities in the user's
-preferred unit. The optional package accepts `C`, `°C`, `F`, or `°F` for
-the configured limits. It converts Fahrenheit lower limits upward and upper
-limits downward to the integer-Celsius range the current UART implementation
-uses. For example, 50–95 °F becomes 10–35 °C. PI gains, integral state, and
-correction remain Celsius differences; the correction sensor is explicitly
-marked `Δ°C` so Home Assistant will not apply an absolute-temperature offset.
-`Room source age` is the age of HA's latest report, not proof of when the
-physical sensor acquired its value.
+Celsius. The inline Home Assistant template accepts Celsius and Fahrenheit
+room sensors and converts values to Celsius before sending them through the
+native action. Home Assistant can display the climate and absolute-temperature
+entities in the user's preferred unit. The optional package accepts `C`,
+`°C`, `F`, or `°F` for the configured limits. It converts Fahrenheit lower
+limits upward and upper limits downward to the integer-Celsius range the
+current UART implementation uses. For example, 50–95 °F becomes 10–35 °C. PI
+gains, integral state, and correction remain Celsius differences; the
+correction sensor is explicitly marked `Δ°C` so Home Assistant will not apply
+an absolute-temperature offset. `Room source age` is the age of HA's latest
+report, not proof of when the physical sensor acquired its value.
 
 For a Fahrenheit-configured installation, set the existing substitutions like
 this before including the optional package:
@@ -165,9 +192,9 @@ python3 tests/fixtures/test_room_integration.py
 ESPHOME_BIN="$ESPHOME_VENV_PATH/bin/esphome" python3 tests/fixtures/test_room_native_units.py
 ```
 
-The component's targeted HA tests use the official Home Assistant Core
-2026.10.2 fixtures. To recreate the sparse fixture checkout and Python 3.14
-environment:
+The native payload-template tests use the official Home Assistant Core
+2026.10.2 fixtures and render the package's actual Jinja template. To recreate
+the sparse fixture checkout and Python 3.14 environment:
 
 ```sh
 HA_CORE_SRC="${HA_CORE_SRC:-/tmp/duepi-ha-core-2026.10.2}"
@@ -180,7 +207,7 @@ python3.14 -m venv "$HA_TEST_VENV"
 "$HA_TEST_VENV/bin/python" -m pip install -r requirements-test-ha.txt
 
 PYTHONPATH="$HA_CORE_SRC" PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-  "$HA_TEST_VENV/bin/python" -m pytest -q tests/ha
+  "$HA_TEST_VENV/bin/python" -m pytest -q tests/ha/test_native_payload_template.py
 ```
 
 Compile the four development fixtures with the pinned local runtime:
@@ -199,22 +226,28 @@ to a stove controller. A later authorized field test must compile the chosen
 node configuration with the user's existing local secrets; those secrets are
 not part of these fixtures or this repository change.
 
-The ESP-01 1 MB OTA layout was checked statically against the installed ESPHome
-2026.9.1 backend and Arduino linker script. The script sets FS_start to
-0x402FB000, giving a staging end of 1,028,096 bytes. The backend rounds the
-current image and incoming compressed image to 4,096-byte sectors; ESPHome
-compresses OTA uploads with gzip level 9. The fixture sizes are:
+The ESP-01 1 MB OTA layout was measured with ESPHome 2026.9.1 after compiling
+the current fixtures. The Arduino linker script sets FS_start to 0x402FB000,
+giving a staging end of 1,028,096 bytes. The backend rounds the current image
+and incoming compressed image to 4,096-byte sectors; ESPHome compresses OTA
+uploads with gzip level 9. The fixture sizes are:
 
 | Image | .bin | gzip OTA | .bin rounded | gzip rounded |
 | --- | ---: | ---: | ---: | ---: |
 | Legacy ESP-01 | 520,816 | 363,841 | 524,288 | 364,544 |
-| Optional C | 549,664 | 383,648 | 552,960 | 385,024 |
-| Optional F | 549,664 | 383,660 | 552,960 | 385,024 |
+| Optional C | 560,288 | 389,591 | 561,152 | 393,216 |
+| Optional F | 560,304 | 389,603 | 561,152 | 393,216 |
 
-Legacy→optional C or F uses 909,312 bytes and leaves 118,784 bytes. Optional
-C/F→optional C/F uses 937,984 bytes and leaves 90,112 bytes. This assumes the
-currently installed image is the fixture shown; it is not a measurement of an
-unknown device image and is not an OTA attempt or OTA success claim.
+Legacy→optional C or F uses 917,504 bytes and leaves 110,592 bytes. Optional
+C/F→optional C/F uses 954,368 bytes and leaves 73,728 bytes. The real ESP-01
+build produced a 560,288-byte OTA image and 389,622-byte gzip payload (393,216
+bytes rounded). The C3 build produced a 1,039,744-byte OTA image. Current
+implementation results are recorded in the
+[native validation report](superpowers/validation/2026-10-20-duepi-native.md);
+the earlier report remains available as historical validation at
+`superpowers/validation/2026-10-20-duepi-room.md`. These margins assume the
+currently installed image is the fixture shown; they do not measure an
+unknown device image and are not an OTA attempt or OTA success claim.
 
 ## Supervised field protocol
 
