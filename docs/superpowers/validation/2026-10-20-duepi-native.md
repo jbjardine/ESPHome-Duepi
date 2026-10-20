@@ -69,3 +69,37 @@ Validation finale : **44 tests HA du dépôt**, **42 natifs**, **14 contrats**, 
 Test réel d'une source HA absente, sans créer d'entité : le repli fait passer RC6000 de **21 à 20 °C à 15:21:51**, avec Compensation maintenue. Sonde salon rétablie à 15:22:24; après le délai de cinq minutes, reprise normale à **21 °C confirmée par RC6000 à 15:26:51**, état regulating et toujours Compensation à 15:27:21. Cible pièce 20 °C, PI 0. Ce test d'indisponibilité est distinct d'un retrait physique de pile; l'expiration à 900 s malgré les heartbeats HA est couverte par l'horloge injectée.
 
 La précision thermique à 20 °C reste à mesurer. Un défaut d'affichage séparé du current_temperature de Room target est seulement noté en réserve, sans chantier supplémentaire. Les preuves détaillées et empreintes de firmware restent dans le rapport privé du suivi de déploiement.
+
+## Conservation de l'intégrale pendant les nettoyages courts, 20 octobre au soir
+
+Les phases connues `0x0401` et `0x0200` conservent maintenant l'intégrale pour un
+nettoyage de moins de 120 secondes. Les changements entre ces deux phases ne
+renouvellent pas ce délai. Aucun calcul d'intégration ni RF2 automatique pendant
+le nettoyage. Au retour de `0x0201`, de nouvelles observations RD1000 et RC6000
+sont requises; la base de temps de la PI repart à cette reprise, sans compter
+le temps du nettoyage ni celui d'attente des lectures. Les cas d'arrêt, alarme,
+phase inconnue, données perdues/périmées, contrôle manuel et nettoyage prolongé
+continuent à effacer l'intégrale. Aucun gain ni mode Marche/Arrêt automatique
+n'est ajouté ou changé.
+
+Preuve rouge : les cinq premiers nouveaux tests échouaient sur le code précédent.
+Après implémentation et ajout du cas de reprise sans lectures fraîches :
+`sh tests/native/run_tests.sh` **48/48** et
+`python3 tests/fixtures/test_room_integration.py` **14/14** passent.
+Ces contrôles n'exécutent pas la suite HA Core. Les images C3 et Fahrenheit
+n'ont pas été recompilées pour ce correctif limité au contrôleur.
+
+La configuration privée réelle a été compilée avec ESPHome **2026.9.1** puis
+flashée par OTA. Image **560752 octets**, transfert compressé **389957 octets**;
+SHA256 `c777591e1c559ca75d6b16ac5423535da244012a85fb8d437f9560f90bfe37c5`.
+RAM **48320/81920**, flash **556597/1023984**. L'API du même module confirme
+le build **21:49:25 +0200**. Le contrôle d'un nettoyage physique après ce flash
+reste distinct des tests déterministes du contrôleur.
+
+Après le retry natif initial, la vraie sonde est de nouveau reçue; le mode
+Compensation + PI présent avant le flash est rétabli à **21:52:09**, cible pièce
+20 °C, état regulating, native/calcul 22 °C, mesure salon 21,4 °C âgée de 165 s.
+La PI repart normalement à zéro au redémarrage, avec correction proportionnelle
+-0,14 °C. Aucun ordre Marche/Arrêt envoyé pour installer ce correctif. Pont off
+et radiateurs Off/16 °C. Un nettoyage physique après ce flash n'a pas encore
+été observé; le maintien thermique à 20 °C n'est pas une conclusion de ce test.

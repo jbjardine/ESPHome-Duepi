@@ -174,6 +174,11 @@ class Controller {
   uint32_t last_integrated_sample_ms_{0};
   bool has_integrated_sample_{false};
 
+  bool cleaning_active_{false};
+  uint32_t cleaning_started_ms_{0};
+  bool cleaning_resume_pending_{false};
+  uint32_t cleaning_resumed_ms_{0};
+
   bool request_offered_{false};
   int offered_target_{0};
   bool offered_fallback_{false};

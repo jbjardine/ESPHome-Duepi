@@ -182,10 +182,18 @@ auto-detect or send an unverified Fahrenheit protocol.
 Automatic control requires fresh raw stove temperature and operating state, a
 usable room report, and an idle UART. The firmware uses raw RD1000 temperature
 before legacy filtering and raw RD9000 phase; only the stable burning phase
-`0x0201` is eligible. Bridge takeover, alarms, stale observations, and
-unavailable UART suspend automatic output and reset PI state as defined by the
-protocol. A manual native setpoint change or an explicit Off command selects
+`0x0201` is eligible. Bridge takeover, alarms, and stale observations suspend
+automatic output and reset PI state as defined by the protocol. An unavailable
+UART suspends writes. A manual native setpoint change or an explicit Off command selects
 Local. Received stove status never creates a Heat or Off command.
+
+The known cleaning phases `0x0401` and `0x0200` pause automatic writes and PI
+integration while retaining its accumulated integral for less than two minutes.
+Changing between these phases does not renew that window. On return to stable
+burning, new RD1000 and RC6000 observations are required; the PI time baseline
+restarts there, so the cleaning interval is never integrated. A longer cleaning,
+unknown phase, actual stop, alarm, or stale/invalid input still resets the PI.
+This behavior does not add automatic stove shutdowns or change the PI gains.
 
 The equation without PI is:
 

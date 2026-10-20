@@ -468,6 +468,195 @@ TEST(pi_allows_integral_unwinding_when_error_reverses) {
   CHECK_NEAR(unwound.integral, 0.0, 0.0001);
 }
 
+TEST(short_cleaning_preserves_pi_and_resumes_only_after_new_stove_readings) {
+  for (const uint16_t phase : {0x0401, 0x0200}) {
+    Fixture fixture;
+    fixture.config.kp = 0.0F;
+    fixture.config.ki_per_hour = 0.5F;
+    fixture.prepare(Mode::PI_CONTROL, 20.0F, 21.0F, 23.0F, 22.0F, 1, "1");
+    fixture.controller.poll();
+    fixture.now += 30U * 60U * 1000U;
+    fixture.send_sample(2, 21.0F, "2");
+    CHECK_NEAR(fixture.controller.poll().integral, -0.25, 0.00001);
+
+    fixture.now += 1000;
+    fixture.controller.observe_raw_stove_phase(phase);
+    const Decision cleaning = fixture.controller.poll();
+    CHECK(cleaning.status == Status::STOVE_INACTIVE);
+    CHECK_NEAR(cleaning.integral, -0.25, 0.00001);
+    CHECK(!cleaning.target_requested);
+    CHECK(!fixture.controller.authorize_rf2_emission(21));
+
+    fixture.now += 20000;
+    fixture.send_sample(3, 21.0F, "3");
+    CHECK_NEAR(fixture.controller.poll().integral, -0.25, 0.00001);
+    fixture.controller.observe_raw_stove_phase(0x0201);
+    CHECK(fixture.controller.poll().status == Status::WAITING_STOVE);
+    CHECK_NEAR(fixture.controller.poll().integral, -0.25, 0.00001);
+
+    fixture.now++;
+    fixture.controller.observe_raw_stove_temperature(23.0F);
+    CHECK(fixture.controller.poll().status == Status::WAITING_STOVE);
+    fixture.now++;
+    fixture.controller.observe_native_target(22.0F);
+    const Decision resumed = fixture.controller.poll();
+    CHECK(resumed.status == Status::REGULATING);
+    CHECK_NEAR(resumed.integral, -0.25, 0.00001);
+    CHECK(!resumed.target_requested);
+
+    fixture.now += 60000;
+    fixture.send_sample(4, 21.0F, "4");
+    const Decision next_sample = fixture.controller.poll();
+    // Only the minute after resumption counts, never the cleaning interval.
+    CHECK_NEAR(next_sample.integral, -0.258333333, 0.00001);
+  }
+}
+
+TEST(cleaning_recalculates_proportional_correction_without_integrating_paused_samples) {
+  Fixture fixture;
+  fixture.config.ki_per_hour = 0.5F;
+  fixture.prepare(Mode::PI_CONTROL, 20.0F, 21.0F, 23.0F, 22.0F, 1, "1");
+  fixture.controller.poll();
+  fixture.now += 30U * 60U * 1000U;
+  fixture.send_sample(2, 21.0F, "2");
+  CHECK_NEAR(fixture.controller.poll().integral, -0.25, 0.00001);
+
+  fixture.now++;
+  fixture.controller.observe_raw_stove_phase(0x0401);
+  fixture.now += 20000;
+  fixture.send_sample(3, 19.0F, "3");
+  CHECK(!fixture.controller.poll().target_requested);
+  fixture.controller.observe_raw_stove_phase(0x0201);
+  fixture.now++;
+  fixture.controller.observe_raw_stove_temperature(23.0F);
+  fixture.controller.observe_native_target(22.0F);
+  const Decision resumed = fixture.controller.poll();
+  CHECK_NEAR(resumed.integral, -0.25, 0.00001);
+  CHECK_NEAR(resumed.correction, -0.15, 0.00001);
+  CHECK(resumed.target_requested);
+  CHECK(resumed.target == 24);
+}
+
+TEST(cleaning_timeout_is_not_extended_by_phase_changes_or_missing_polls) {
+  for (const bool poll_before_resume : {false, true}) {
+    Fixture fixture;
+    fixture.config.kp = 0.0F;
+    fixture.config.ki_per_hour = 0.5F;
+    fixture.prepare(Mode::PI_CONTROL, 20.0F, 21.0F, 23.0F, 22.0F, 1, "1");
+    fixture.controller.poll();
+    fixture.now += 30U * 60U * 1000U;
+    fixture.send_sample(2, 21.0F, "2");
+    CHECK_NEAR(fixture.controller.poll().integral, -0.25, 0.00001);
+
+    fixture.now++;
+    fixture.controller.observe_raw_stove_phase(0x0401);
+    fixture.now += 60000;
+    fixture.controller.observe_raw_stove_phase(0x0200);
+    CHECK_NEAR(fixture.controller.poll().integral, -0.25, 0.00001);
+    fixture.now += 60000;
+    if (poll_before_resume) {
+      CHECK_NEAR(fixture.controller.poll().integral, 0.0, 0.00001);
+    }
+    fixture.controller.observe_raw_stove_phase(0x0201);
+    fixture.now++;
+    fixture.controller.observe_raw_stove_temperature(23.0F);
+    fixture.controller.observe_native_target(22.0F);
+    CHECK_NEAR(fixture.controller.poll().integral, 0.0, 0.00001);
+  }
+}
+
+TEST(cleaning_does_not_preserve_pi_after_source_loss_stop_unknown_phase_or_manual_control) {
+  for (const int interruption : {0, 1, 2, 3, 4, 5}) {
+    Fixture fixture;
+    fixture.config.kp = 0.0F;
+    fixture.config.ki_per_hour = 0.5F;
+    fixture.prepare(Mode::PI_CONTROL, 20.0F, 21.0F, 23.0F, 22.0F, 1, "1");
+    fixture.controller.poll();
+    fixture.now += 30U * 60U * 1000U;
+    fixture.send_sample(2, 21.0F, "2");
+    CHECK_NEAR(fixture.controller.poll().integral, -0.25, 0.00001);
+    fixture.now++;
+    fixture.controller.observe_raw_stove_phase(0x0401);
+    CHECK_NEAR(fixture.controller.poll().integral, -0.25, 0.00001);
+
+    if (interruption == 0) {
+      fixture.controller.invalidate_relay_source();
+    } else if (interruption == 1) {
+      fixture.controller.observe_raw_stove_phase(0x0000);
+    } else if (interruption == 2) {
+      fixture.controller.observe_raw_stove_phase(0x7777);
+    } else if (interruption == 3) {
+      fixture.controller.observe_manual_native_target(25.0F);
+    } else if (interruption == 4) {
+      fixture.controller.on_explicit_mode_command(false);
+    } else {
+      fixture.controller.observe_stove_alarm(true);
+    }
+    const Decision interrupted = fixture.controller.poll();
+    CHECK_NEAR(interrupted.integral, 0.0, 0.00001);
+    CHECK(!interrupted.target_requested);
+    if (interruption == 3) {
+      CHECK(interrupted.mode == Mode::LOCAL_ONLY);
+      CHECK_NEAR(interrupted.native_target, 25.0, 0.00001);
+    }
+    if (interruption == 4)
+      CHECK(interrupted.mode == Mode::LOCAL_ONLY);
+  }
+}
+
+TEST(stale_room_or_stove_data_during_cleaning_discards_the_integral) {
+  for (const bool stale_room : {false, true}) {
+    Fixture fixture;
+    fixture.config.kp = 0.0F;
+    fixture.config.ki_per_hour = 0.5F;
+    fixture.prepare(Mode::PI_CONTROL, 20.0F, 21.0F, 23.0F, 22.0F, 1, "1");
+    fixture.controller.poll();
+    fixture.now += 30U * 60U * 1000U;
+    fixture.send_sample(2, 21.0F, "2");
+    CHECK_NEAR(fixture.controller.poll().integral, -0.25, 0.00001);
+    fixture.now++;
+    fixture.controller.observe_raw_stove_phase(0x0401);
+    CHECK_NEAR(fixture.controller.poll().integral, -0.25, 0.00001);
+    fixture.now += 20000;
+    if (stale_room) {
+      fixture.send_sample(3, 21.0F, "2", 901);
+    } else {
+      fixture.controller.observe_raw_stove_temperature(std::numeric_limits<float>::quiet_NaN());
+    }
+    CHECK_NEAR(fixture.controller.poll().integral, 0.0, 0.00001);
+    CHECK(!fixture.controller.poll().target_requested);
+  }
+}
+
+TEST(cleaning_resume_cannot_preserve_history_indefinitely_without_new_readings) {
+  Fixture fixture;
+  fixture.config.kp = 0.0F;
+  fixture.config.ki_per_hour = 0.5F;
+  fixture.config.max_stove_age_ms = 45000;
+  fixture.prepare(Mode::PI_CONTROL, 20.0F, 21.0F, 23.0F, 22.0F, 1, "1");
+  fixture.controller.poll();
+  fixture.now += 30U * 60U * 1000U;
+  fixture.controller.observe_raw_stove_temperature(23.0F);
+  fixture.controller.observe_raw_stove_phase(0x0201);
+  fixture.controller.observe_native_target(22.0F);
+  fixture.send_sample(2, 21.0F, "2");
+  CHECK_NEAR(fixture.controller.poll().integral, -0.25, 0.00001);
+
+  fixture.now++;
+  fixture.controller.observe_raw_stove_phase(0x0401);
+  CHECK_NEAR(fixture.controller.poll().integral, -0.25, 0.00001);
+  fixture.now += 20000;
+  fixture.controller.observe_raw_stove_phase(0x0201);
+  CHECK(fixture.controller.poll().status == Status::WAITING_STOVE);
+  CHECK_NEAR(fixture.controller.poll().integral, -0.25, 0.00001);
+  fixture.now += 45000;
+  fixture.controller.observe_raw_stove_phase(0x0201);
+  const Decision expired = fixture.controller.poll();
+  CHECK(expired.status == Status::WAITING_STOVE);
+  CHECK_NEAR(expired.integral, 0.0, 0.00001);
+  CHECK(!expired.target_requested);
+}
+
 TEST(repeated_and_out_of_order_source_packets_do_not_extend_the_relay_lease) {
   Fixture fixture;
   fixture.prepare(Mode::COMPENSATION, 20.0F, 20.0F, 23.0F, 23.0F);

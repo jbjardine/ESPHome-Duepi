@@ -2,6 +2,9 @@
 
 ## En cours
 
+- Correctif du 20/10 au soir : conserver l'intégrale pendant les seuls nettoyages connus 0x0401/0x0200 de moins de deux minutes, sans intégration ni écriture. Reprise après de nouvelles lectures RD1000/RC6000, avec nouvelle base de temps. Timeout, arrêt réel, phase inconnue, perte de données, alarme et priorité manuelle gardent leur remise à zéro. Aucun arrêt automatique ajouté; gains PI inchangés.
+- Vérification de ce correctif : 5 nouveaux cas échouaient avant l'implémentation; 48/48 tests natifs et 14/14 contrats passent après ajout du contrôle d'expiration de reprise. Configuration ESP-01 réelle compilée avec ESPHome 2026.9.1 : RAM 48320/81920 (59,0 %), flash 556597/1023984 (54,4 %), image 560752 octets. OTA réussie, même module/API confirmé avec build 21:49:25. Sonde réelle reçue après le retry initial; mode courant Compensation + PI rétabli à 21:52:09, regulating, cible pièce 20 °C, native/calcul 22 °C, source 21,4 °C âgée de 165 s et correction PI -0,14 °C. Aucun ordre Marche/Arrêt envoyé pour cette installation; pont off et radiateurs Off/16 °C. Le prochain nettoyage physique n'est pas encore une preuve acquise.
+
 - Résultat demandé : compensation ESPHome avec sonde HA, PI facultative, reprise explicite par bouton, puis installation autorisée sur le poêle de JB. Dernier choix : aucun complément HA à installer, aucun restart global.
 - Branche `codjardine/remote-room-regulation`; push uniquement vers `origin` sur le fork personnel. Aucun travail dans DUEPI_EVO ni push upstream.
 - Base native `c1c0f57`, fraîcheur `cee5c52`, reprise/échos RC6000 `0c485c6`. 44 tests HA du dépôt, 42 natifs, 14 contrats et 6 C/F passent. Images réelles ESP-01, legacy sans extension et exemple C3 compilées avec ESPHome 2026.9.1. Le contrôle matériel a aussi couvert le repli et la reprise; les tests isolés ne sont pas présentés comme une preuve du raccord SDK.

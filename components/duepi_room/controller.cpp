@@ -10,6 +10,7 @@ namespace duepi_room {
 namespace {
 
 constexpr uint16_t ACTIVE_BURNING_PHASE = 0x0201;
+constexpr uint32_t MAX_CLEANING_HOLD_MS = 120000;
 constexpr float TARGET_EPSILON = 0.49F;
 constexpr float STABLE_TARGET_EPSILON = 0.01F;
 
@@ -28,6 +29,8 @@ bool valid_generation(const std::string &generation) {
   }
   return true;
 }
+
+bool cleaning_phase(uint16_t phase) { return phase == 0x0401 || phase == 0x0200; }
 
 }  // namespace
 
@@ -104,12 +107,33 @@ void Controller::observe_raw_stove_temperature(float temperature_c) {
 }
 
 void Controller::observe_raw_stove_phase(uint16_t phase) {
+  const uint32_t now = this->now_();
   this->stove_phase_ = phase;
-  this->stove_phase_ms_ = this->now_();
+  this->stove_phase_ms_ = now;
   this->stove_phase_valid_ = true;
   this->stove_phase_revision_++;
   if (this->phase_after_heat_required_ && this->stove_phase_revision_ == this->required_phase_revision_)
     this->phase_after_heat_required_ = false;
+  if (cleaning_phase(phase)) {
+    // Changing between the two cleaning phases must not renew the hold window.
+    if (!this->cleaning_active_ && !this->cleaning_resume_pending_)
+      this->cleaning_started_ms_ = now;
+    this->cleaning_active_ = true;
+    this->cleaning_resume_pending_ = false;
+    if (elapsed_ms(now, this->cleaning_started_ms_) >= MAX_CLEANING_HOLD_MS)
+      this->reset_integral_();
+    this->cancel_request_();
+    return;
+  }
+  if (this->cleaning_active_) {
+    this->cleaning_active_ = false;
+    if (phase == ACTIVE_BURNING_PHASE && elapsed_ms(now, this->cleaning_started_ms_) < MAX_CLEANING_HOLD_MS) {
+      this->cleaning_resume_pending_ = true;
+      this->cleaning_resumed_ms_ = now;
+    } else {
+      this->reset_integral_();
+    }
+  }
   if (phase != ACTIVE_BURNING_PHASE) {
     this->reset_integral_();
     this->cancel_request_();
@@ -404,9 +428,28 @@ Decision Controller::poll() {
 
   if (this->stove_phase_valid_ && this->fresh_(true, this->stove_phase_ms_, now) &&
       this->stove_phase_ != ACTIVE_BURNING_PHASE) {
-    this->reset_integral_();
+    const bool hold_cleaning = this->cleaning_active_ && cleaning_phase(this->stove_phase_) &&
+                               elapsed_ms(now, this->cleaning_started_ms_) < MAX_CLEANING_HOLD_MS &&
+                               this->fresh_(this->stove_temperature_valid_, this->stove_temperature_ms_, now) &&
+                               this->fresh_(this->native_target_valid_, this->native_target_ms_, now) &&
+                               this->source_usable_(now);
+    if (!hold_cleaning)
+      this->reset_integral_();
     this->cancel_request_();
     return this->make_decision_(Status::STOVE_INACTIVE);
+  }
+
+  if (this->cleaning_resume_pending_) {
+    const uint32_t since_resume = elapsed_ms(now, this->cleaning_resumed_ms_);
+    if (!this->source_usable_(now) || !this->fresh_(this->stove_phase_valid_, this->stove_phase_ms_, now) ||
+        since_resume >= this->config_.max_stove_age_ms) {
+      this->reset_after_input_loss_();
+    } else if (!this->stove_temperature_valid_ || !this->native_target_valid_ ||
+               elapsed_ms(now, this->stove_temperature_ms_) > since_resume ||
+               elapsed_ms(now, this->native_target_ms_) > since_resume) {
+      // The phase response precedes RD1000 and RC6000 in the normal poll.
+      return this->make_decision_(Status::WAITING_STOVE);
+    }
   }
 
   if (!this->stove_inputs_fresh_(now)) {
@@ -449,11 +492,21 @@ Decision Controller::poll() {
   const float error = this->room_target_ - this->source_.temperature_c;
   const float base = this->stove_temperature_ + error;
   if (this->mode_ == Mode::PI_CONTROL) {
-    this->integrate_new_sample_(now, error, this->stove_temperature_, base);
+    if (this->cleaning_resume_pending_) {
+      // Start a new time baseline while keeping the accumulated correction.
+      // Neither cleaning nor the wait for fresh stove readings is integrated.
+      this->last_integrated_sample_id_ = this->source_.sample_id;
+      this->last_integrated_sample_ms_ = now;
+      this->has_integrated_sample_ = true;
+      this->correction_ = this->calculate_correction_(error);
+    } else {
+      this->integrate_new_sample_(now, error, this->stove_temperature_, base);
+    }
   } else {
     this->integral_ = 0.0F;
     this->correction_ = 0.0F;
   }
+  this->cleaning_resume_pending_ = false;
 
   const float unclamped_target = base + this->correction_;
   const int computed_target = this->clamp_native_(this->round_ties_up(unclamped_target));
@@ -563,6 +616,7 @@ void Controller::reset_integral_() {
   this->last_integrated_sample_id_.clear();
   this->last_integrated_sample_ms_ = 0;
   this->has_integrated_sample_ = false;
+  this->cleaning_resume_pending_ = false;
 }
 
 void Controller::cancel_request_() {
