@@ -17,6 +17,8 @@ esphome:
       then:
         - lambda: |-
             id(uart_send) = 0;
+            id(room_poll_active_count) = 0;
+            id(room_rf2_emit_authorized) = false;
             id(boot_restore_in_progress) = true;
             id(climate_sync_in_progress) = false;
             id(expert_bridge_client_connected) = false;
@@ -138,6 +140,10 @@ esphome:
           void publish_connected_(bool connected) {
             *this->connected_flag_ = connected;
             this->connected_sensor_->publish_state(connected);
+            #ifdef USE_DUEPI_ROOM
+            extern void duepi_room_observe_bridge_connected(bool connected);
+            duepi_room_observe_bridge_connected(connected);
+            #endif
           }
 
           void publish_takeover_active_(bool active) { *this->takeover_active_flag_ = active; }
@@ -365,6 +371,11 @@ esphome:
 
         bridge.set_enabled(id(expert_tcp_bridge_mode).state);
         bridge.loop();
+        #ifdef USE_DUEPI_ROOM
+        extern void duepi_room_observe_uart_availability(bool available);
+        duepi_room_observe_uart_availability(id(uart_send) == 0 && id(room_poll_active_count) == 0 &&
+                                             !id(expert_bridge_client_connected));
+        #endif
 
 api:
   actions:
@@ -461,6 +472,14 @@ globals:
      type: int
      restore_value: no
      initial_value: '0'
+   - id: room_poll_active_count
+     type: int
+     restore_value: no
+     initial_value: '0'
+   - id: room_rf2_emit_authorized
+     type: bool
+     restore_value: no
+     initial_value: 'false'
    - id: boot_restore_in_progress
      type: bool
      restore_value: no

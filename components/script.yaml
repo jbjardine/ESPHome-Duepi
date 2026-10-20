@@ -40,3 +40,159 @@ script:
               id(debug_last_payload).publish_state(payload);
               std::vector<uint8_t> vec(str.begin(), str.end());
               return vec;
+  - id: STOVE_SET_TARGET
+    parameters:
+      target_in: int
+      automatic: bool
+    then:
+      - if:
+          condition:
+            lambda: 'return automatic || !id(expert_bridge_client_connected);'
+          then:
+            - if:
+                condition:
+                  lambda: 'return automatic;'
+                then:
+                  - wait_until:
+                      condition:
+                        lambda: 'return id(uart_send) == 0 && id(room_poll_active_count) == 0 && !id(expert_bridge_client_connected);'
+                      timeout: 1s
+            - if:
+                condition:
+                  lambda: 'return !automatic || (id(uart_send) == 0 && id(room_poll_active_count) == 0 && !id(expert_bridge_client_connected));'
+                then:
+                  - lambda: |-
+                      id(room_rf2_emit_authorized) = false;
+                      if (!automatic)
+                        id(uart_send) = 9;
+                  - uart.write:
+                      id: uart_bus
+                      data: !lambda |-
+                        int temp = target_in;
+                        int min_target = ${min_temp};
+                        int max_target = ${max_temp};
+                        #ifdef USE_DUEPI_ROOM
+                        extern int duepi_room_native_min();
+                        extern int duepi_room_native_max();
+                        min_target = duepi_room_native_min();
+                        max_target = duepi_room_native_max();
+                        #endif
+                        if (temp < min_target || temp > max_target) {
+                          id(debug).publish_state("Temperature out of range. Set  to average min/max temp");
+                          temp = (min_target + max_target) / 2;
+                        }
+                        if (automatic) {
+                          #ifdef USE_DUEPI_ROOM
+                          extern bool duepi_room_authorize_rf2_emission(int target);
+                          extern void duepi_room_on_rf2_not_emitted();
+                          if (!duepi_room_authorize_rf2_emission(temp)) {
+                            duepi_room_on_rf2_not_emitted();
+                            return std::vector<uint8_t>{};
+                          }
+                          id(room_rf2_emit_authorized) = true;
+                          id(uart_send) = 9;
+                          #else
+                          id(uart_send) = 0;
+                          return std::vector<uint8_t>{};
+                          #endif
+                        }
+                        std::string rf2 = str_sprintf("%X", temp);
+                        if (rf2.length() == 1) {
+                          rf2 = "F20" + rf2;
+                        } else {
+                          rf2 = "F2" + rf2;
+                        }
+                        std::string payload = "R" + rf2 + "0";
+                        unsigned int checksum = 0;
+                        for (size_t i = 0; i < payload.size(); i++)
+                          checksum += static_cast<unsigned char>(payload[i]);
+                        checksum &= 0xFF;
+                        std::string frame = "\x1b" + payload + str_sprintf("%X", checksum) + "&";
+                        id(debug).publish_state("Custom command: " + frame + " send.");
+                        id(debug_tx).publish_state(frame);
+                        id(debug_last_payload).publish_state(payload);
+                        return std::vector<uint8_t>(frame.begin(), frame.end());
+                  - if:
+                      condition:
+                        lambda: 'return automatic && id(room_rf2_emit_authorized);'
+                      then:
+                        - lambda: |-
+                            #ifdef USE_DUEPI_ROOM
+                            extern bool duepi_room_on_rf2_emitted(int target);
+                            duepi_room_on_rf2_emitted(target_in);
+                            #endif
+                            id(room_rf2_emit_authorized) = false;
+                  - wait_until:
+                      condition:
+                        lambda: 'return id(uart_send) == 0;'
+                      timeout: 100ms
+                  - if:
+                      condition:
+                        lambda: 'return id(debug).state != "OK";'
+                      then:
+                        - lambda: id(debug).publish_state("Stove temp change failed");
+                else:
+                  - lambda: |-
+                      #ifdef USE_DUEPI_ROOM
+                      if (automatic) {
+                        extern void duepi_room_on_rf2_not_emitted();
+                        duepi_room_on_rf2_not_emitted();
+                      }
+                      #endif
+          else:
+            - lambda: |-
+                id(debug).publish_state("Official app connected: target temperature refused");
+  - id: STOVE_SET_MODE
+    parameters:
+      heat: bool
+    then:
+      - if:
+          condition:
+            lambda: 'return id(boot_restore_in_progress) || id(climate_sync_in_progress);'
+          then:
+            - lambda: |-
+                id(debug).publish_state(id(boot_restore_in_progress)
+                                            ? (heat ? "Heat On suppressed during boot restore" : "Heat OFF suppressed during boot restore")
+                                            : (heat ? "Heat On suppressed during stove sync" : "Heat OFF suppressed during stove sync"));
+          else:
+            - if:
+                condition:
+                  lambda: 'return !id(expert_bridge_client_connected);'
+                then:
+                  - wait_until:
+                      condition:
+                        lambda: 'return id(uart_send) == 0;'
+                      timeout: 1s
+                  - if:
+                      condition:
+                        lambda: 'return heat;'
+                      then:
+                        - script.execute:
+                            id: UART_CMD
+                            command_in: !lambda |-
+                              id(debug).publish_state("Heat On");
+                              id(uart_send) = 9;
+                              if (id(firmware) == "9200") { return "F005"; }
+                              if (id(firmware) == "E670" || id(firmware) == "E693") { return "F006"; }
+                              return "F001";
+                        - script.wait: UART_CMD
+                      else:
+                        - lambda: |-
+                            id(debug).publish_state("Heat OFF");
+                            id(uart_send) = 9;
+                        - uart.write: "\x1bRF000058&"
+                  - wait_until:
+                      condition:
+                        lambda: 'return id(uart_send) == 0;'
+                      timeout: 100ms
+                  - if:
+                      condition:
+                        lambda: 'return id(debug).state != "OK";'
+                      then:
+                        - lambda: |-
+                            id(debug).publish_state(heat ? "Stove failed Heat On" : "Stove failed Heat Off");
+                  - lambda: id(uart_send) = 1;
+                else:
+                  - lambda: |-
+                      id(debug).publish_state(heat ? "Official app connected: heat mode refused"
+                                                   : "Official app connected: off mode refused");

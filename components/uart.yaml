@@ -74,6 +74,10 @@ uart:
                   const int STATE_ECO_COOL2       = 0x1002;
                   const int STATE_ECO_OFF         = 0x1003;
                   int currentstate = std::stoi(data_from_server.substr(1, 4), nullptr, 16);
+                  #ifdef USE_DUEPI_ROOM
+                  extern void duepi_room_observe_raw_stove_phase(uint16_t phase);
+                  duepi_room_observe_raw_stove_phase(static_cast<uint16_t>(currentstate));
+                  #endif
                   int kachel_aan = 1;
                   if (STATE_IGNITION == currentstate) { status = "Ignition starting";}
                   else if (STATE_LOAD_WOOD == currentstate) { status = "Ignition starting, load wood"; }
@@ -123,7 +127,12 @@ uart:
                   break;
                 }
                 case 2: {
-                  id(room_temp_stove).publish_state(std::stoi(data_from_server.substr(1, 4), nullptr, 16)/10.0);
+                  float raw_temperature_c = std::stoi(data_from_server.substr(1, 4), nullptr, 16) / 10.0F;
+                  #ifdef USE_DUEPI_ROOM
+                  extern void duepi_room_observe_raw_stove_temperature(float temperature_c);
+                  duepi_room_observe_raw_stove_temperature(raw_temperature_c);
+                  #endif
+                  id(room_temp_stove).publish_state(raw_temperature_c);
                   id(uart_send) = 1;
                   break;
                 }
@@ -156,6 +165,10 @@ uart:
                 case 7: {
                   int err_code = std::stoi(data_from_server.substr(1, 4), nullptr, 16);
                   id(error_code).publish_state(err_code);
+                  #ifdef USE_DUEPI_ROOM
+                  extern void duepi_room_observe_stove_alarm(bool active);
+                  duepi_room_observe_stove_alarm(err_code != 0);
+                  #endif
                   id(uart_send) = 1;
                   switch(err_code) {
                     case 0: { break; }
@@ -222,7 +235,22 @@ uart:
                 }
                 case 8: {
                   int temp = std::stoi(data_from_server.substr(1, 4), nullptr, 16);
-                  if (temp>= ${min_temp}  && temp <= ${max_temp} ) { id(Stove).target_temperature = temp; }
+                  #ifdef USE_DUEPI_ROOM
+                  extern void duepi_room_observe_native_target(float target_c);
+                  duepi_room_observe_native_target(static_cast<float>(temp));
+                  extern int duepi_room_native_min();
+                  extern int duepi_room_native_max();
+                  const int min_target = duepi_room_native_min();
+                  const int max_target = duepi_room_native_max();
+                  #else
+                  const int min_target = ${min_temp};
+                  const int max_target = ${max_temp};
+                  #endif
+                  if (temp >= min_target && temp <= max_target) {
+                    id(climate_sync_in_progress) = true;
+                    id(Stove).target_temperature = temp;
+                    id(climate_sync_in_progress) = false;
+                  }
                   else { id(debug).publish_state("Error temperature out of range :"+temp); }
                   id(uart_send) = 0;
                   break;

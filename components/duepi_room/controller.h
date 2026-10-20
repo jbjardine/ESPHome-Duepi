@@ -8,13 +8,13 @@ namespace esphome {
 namespace duepi_room {
 
 enum class Mode : uint8_t {
-  LOCAL,
+  LOCAL_ONLY,
   COMPENSATION,
-  PI,
+  PI_CONTROL,
 };
 
 enum class Status : uint8_t {
-  LOCAL,
+  LOCAL_ONLY,
   WAITING_STOVE,
   WAITING_SOURCE,
   REGULATING,
@@ -53,8 +53,8 @@ struct RelayMessage {
 };
 
 struct Decision {
-  Status status{Status::LOCAL};
-  Mode mode{Mode::LOCAL};
+  Status status{Status::LOCAL_ONLY};
+  Mode mode{Mode::LOCAL_ONLY};
   bool target_requested{false};
   int target{0};
   bool source_age_available{false};
@@ -85,6 +85,7 @@ class Controller {
   // Observation hooks. Each accepted observation is timestamped by the injected monotonic clock.
   void observe_raw_stove_temperature(float temperature_c);
   void observe_raw_stove_phase(uint16_t phase);
+  void observe_stove_alarm(bool active);
   void observe_native_target(float target_c);
   bool observe_relay(const RelayMessage &message);
   void invalidate_relay_source();
@@ -127,7 +128,7 @@ class Controller {
   Config config_;
   MonotonicClock clock_;
   uint32_t boot_ms_{0};
-  Mode mode_{Mode::LOCAL};
+  Mode mode_{Mode::LOCAL_ONLY};
   float room_target_{20.0F};
   bool room_target_valid_{true};
 
@@ -140,6 +141,7 @@ class Controller {
   uint32_t required_phase_revision_{0};
   bool phase_after_heat_required_{false};
   bool stove_phase_valid_{false};
+  bool stove_alarm_active_{false};
   float native_target_{0.0F};
   uint32_t native_target_ms_{0};
   bool native_target_valid_{false};

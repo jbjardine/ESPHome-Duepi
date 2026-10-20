@@ -1,0 +1,54 @@
+esphome:
+  name: pelletkachel-room
+  friendly_name: Pellet Kachel Room Regulation
+
+esp32:
+  board: lolin_c3_mini
+  framework:
+    type: esp-idf
+
+logger:
+  baud_rate: 0
+  logs:
+    uart_debug: NONE
+
+api:
+  encryption:
+    key: !secret encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: Pelletkachel Fallback Hotspot
+    password: !secret fallback_ap_password
+
+captive_portal:
+
+substitutions:
+  min_temp: "10"
+  max_temp: "35"
+  temp_unit: "°C"
+  tx_pin_esp: "1"
+  rx_pin_esp: "3"
+
+packages:
+  duepi:
+    url: https://github.com/jbjardine/ESPHome-Duepi.git
+    file: components/packages.yaml
+    ref: codjardine/remote-room-regulation
+  room_regulation:
+    url: https://github.com/jbjardine/ESPHome-Duepi.git
+    file: components/packages/room_regulation.yaml
+    ref: codjardine/remote-room-regulation
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/jbjardine/ESPHome-Duepi.git
+      ref: codjardine/remote-room-regulation
+    components: [duepi_room]

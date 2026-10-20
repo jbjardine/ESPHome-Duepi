@@ -44,6 +44,17 @@ packages:
 - running time stove reported (total life time and after cleaning reset), helps to get an early warning before stove sends a signal (the three beeps on startup 😊) <br />
 - Optional ability to send a four character code to the stove to test out new commands. <br />
 
+### Optional room-temperature regulation
+
+An opt-in ESPHome package can use a Home Assistant temperature sensor to adjust
+the stove's native temperature setpoint. The package is separate from the
+existing Duepi entities; installations that do not include it keep their
+current behavior. See [the install guide](docs/room-regulation.md) and the
+[ESP-01](examples/room-regulation-esp8266.yaml) or
+[ESP32-C3](examples/room-regulation-lolin-c3-mini.yaml) examples.
+Its configured limits may be Celsius or Fahrenheit; the component and current
+UART path continue to calculate and command integer Celsius targets.
+
 ### Configuration
 Install ESPHome in HomeAssistent or Homey using one of the links below: <br />
 https://homey.app/en-us/app/nl.inversion.esphome/ESPhome/ <br />

@@ -1,3 +1,5 @@
+import math
+
 from esphome import automation
 import esphome.codegen as cg
 import esphome.config_validation as cv
@@ -14,6 +16,7 @@ NativeModeCommandTrigger = duepi_room_ns.class_(
 
 CONF_NATIVE_MIN = "native_min"
 CONF_NATIVE_MAX = "native_max"
+CONF_LIMIT_UNIT = "limit_unit"
 CONF_FALLBACK_TARGET = "fallback_target"
 CONF_MAX_SOURCE_AGE = "max_source_age"
 CONF_PI = "pi"
@@ -35,8 +38,20 @@ PI_SCHEMA = cv.Schema(
 
 
 def validate_config(config):
-    if config[CONF_NATIVE_MIN] >= config[CONF_NATIVE_MAX]:
+    native_min = config[CONF_NATIVE_MIN]
+    native_max = config[CONF_NATIVE_MAX]
+    if native_min >= native_max:
         raise cv.Invalid("native_min must be less than native_max")
+    if config[CONF_LIMIT_UNIT].replace("°", "").upper() == "F":
+        native_min = math.ceil((native_min - 32) * 5.0 / 9.0)
+        native_max = math.floor((native_max - 32) * 5.0 / 9.0)
+        if native_min > native_max:
+            raise cv.Invalid("configured limits are empty after conversion to integer Celsius")
+    config[CONF_NATIVE_MIN] = cv.int_range(min=1, max=99)(native_min)
+    config[CONF_NATIVE_MAX] = cv.int_range(min=2, max=100)(native_max)
+    # The values above are now canonical Celsius, so repeated validation must
+    # not interpret them as the original Fahrenheit substitutions again.
+    config[CONF_LIMIT_UNIT] = "°C"
     fallback = config[CONF_FALLBACK_TARGET]
     if not config[CONF_NATIVE_MIN] <= fallback <= config[CONF_NATIVE_MAX]:
         raise cv.Invalid("fallback_target must be within native_min and native_max")
@@ -47,8 +62,9 @@ CONFIG_SCHEMA = cv.All(
     cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(DuepiRoomComponent),
-            cv.Required(CONF_NATIVE_MIN): cv.int_range(min=1, max=99),
-            cv.Required(CONF_NATIVE_MAX): cv.int_range(min=2, max=100),
+            cv.Required(CONF_NATIVE_MIN): cv.int_,
+            cv.Required(CONF_NATIVE_MAX): cv.int_,
+            cv.Optional(CONF_LIMIT_UNIT, default="°C"): cv.one_of("C", "°C", "F", "°F"),
             cv.Optional(CONF_FALLBACK_TARGET, default=20.0): cv.float_,
             cv.Optional(CONF_MAX_SOURCE_AGE, default="15min"): cv.positive_time_period_seconds,
             cv.Optional(CONF_PI, default={}): PI_SCHEMA,

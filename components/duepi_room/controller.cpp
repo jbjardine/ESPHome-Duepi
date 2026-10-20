@@ -45,7 +45,7 @@ void Controller::set_mode(Mode mode) {
   this->pending_confirmation_ = false;
   this->command_unconfirmed_ = false;
   this->divergent_target_count_ = 0;
-  if (mode == Mode::LOCAL) {
+  if (mode == Mode::LOCAL_ONLY) {
     this->fallback_done_ = false;
     return;
   }
@@ -106,6 +106,20 @@ void Controller::observe_raw_stove_phase(uint16_t phase) {
   }
 }
 
+void Controller::observe_stove_alarm(bool active) {
+  this->stove_alarm_active_ = active;
+  if (!active)
+    return;
+
+  // An RDA alarm invalidates observations that may still describe the last
+  // burning cycle. Require the normal phase/temperature/target poll to refill
+  // them after the alarm clears.
+  this->stove_temperature_valid_ = false;
+  this->stove_phase_valid_ = false;
+  this->native_target_valid_ = false;
+  this->reset_after_input_loss_();
+}
+
 void Controller::observe_native_target(float target_c) {
   const uint32_t now = this->now_();
   this->refresh_confirmation_timeout_(now);
@@ -137,7 +151,7 @@ void Controller::observe_native_target(float target_c) {
     return;
   }
 
-  if (this->mode_ != Mode::LOCAL && !this->command_unconfirmed_) {
+  if (this->mode_ != Mode::LOCAL_ONLY && !this->command_unconfirmed_) {
     if (!this->last_readback_valid_) {
       this->last_readback_target_ = target_c;
       this->last_readback_valid_ = true;
@@ -152,7 +166,7 @@ void Controller::observe_native_target(float target_c) {
         this->divergent_target_count_ = 1;
       }
       if (this->divergent_target_count_ >= 2) {
-        this->set_mode(Mode::LOCAL);
+        this->set_mode(Mode::LOCAL_ONLY);
         this->native_target_ = target_c;
         this->native_target_ms_ = now;
         this->native_target_valid_ = true;
@@ -244,16 +258,16 @@ void Controller::observe_manual_native_target(float target_c) {
     this->last_readback_target_ = target_c;
     this->last_readback_valid_ = true;
   }
-  this->set_mode(Mode::LOCAL);
+  this->set_mode(Mode::LOCAL_ONLY);
 }
 
 void Controller::on_explicit_mode_command(bool heat) {
   if (!heat) {
-    this->set_mode(Mode::LOCAL);
+    this->set_mode(Mode::LOCAL_ONLY);
     return;
   }
   // HEAT is routed to the existing native mode path; it must not activate external regulation.
-  if (this->mode_ == Mode::LOCAL)
+  if (this->mode_ == Mode::LOCAL_ONLY)
     return;
   this->reset_integral_();
   this->cancel_request_();
@@ -283,7 +297,7 @@ void Controller::observe_bridge_connected(bool connected) {
                                   TARGET_EPSILON;
   this->bridge_connected_ = false;
   if (changed_target)
-    this->set_mode(Mode::LOCAL);
+    this->set_mode(Mode::LOCAL_ONLY);
   this->stove_temperature_valid_ = false;
   this->stove_phase_valid_ = false;
   this->native_target_valid_ = false;
@@ -305,14 +319,18 @@ Decision Controller::poll() {
   const uint32_t now = this->now_();
   this->refresh_confirmation_timeout_(now);
 
-  if (this->mode_ == Mode::LOCAL)
-    return this->make_decision_(Status::LOCAL);
+  if (this->mode_ == Mode::LOCAL_ONLY)
+    return this->make_decision_(Status::LOCAL_ONLY);
   if (this->bridge_connected_)
     return this->make_decision_(Status::BRIDGE);
   if (this->command_unconfirmed_)
     return this->make_decision_(Status::COMMAND_UNCONFIRMED);
   if (this->pending_confirmation_)
     return this->make_decision_(Status::AWAITING_CONFIRMATION);
+  if (this->stove_alarm_active_) {
+    this->reset_after_input_loss_();
+    return this->make_decision_(Status::STOVE_INACTIVE);
+  }
 
   if (this->stove_phase_valid_ && this->fresh_(true, this->stove_phase_ms_, now) &&
       this->stove_phase_ != ACTIVE_BURNING_PHASE) {
@@ -360,7 +378,7 @@ Decision Controller::poll() {
 
   const float error = this->room_target_ - this->source_.temperature_c;
   const float base = this->stove_temperature_ + error;
-  if (this->mode_ == Mode::PI) {
+  if (this->mode_ == Mode::PI_CONTROL) {
     this->integrate_new_sample_(now, error, this->stove_temperature_, base);
   } else {
     this->integral_ = 0.0F;
@@ -398,7 +416,7 @@ Decision Controller::poll() {
 }
 
 bool Controller::authorize_rf2_emission(int target) const {
-  if (!this->request_offered_ || this->offered_target_ != target || this->mode_ == Mode::LOCAL ||
+  if (!this->request_offered_ || this->offered_target_ != target || this->mode_ == Mode::LOCAL_ONLY ||
       this->bridge_connected_ || this->command_unconfirmed_ || this->pending_confirmation_ ||
       !this->uart_available_)
     return false;
@@ -533,7 +551,7 @@ Decision Controller::make_decision_(Status status) const {
 }
 
 float Controller::calculate_correction_(float error) const {
-  if (this->mode_ != Mode::PI)
+  if (this->mode_ != Mode::PI_CONTROL)
     return 0.0F;
   return std::clamp(this->config_.kp * error + this->integral_, -this->config_.correction_limit,
                     this->config_.correction_limit);

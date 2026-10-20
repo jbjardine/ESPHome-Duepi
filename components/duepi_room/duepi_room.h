@@ -26,7 +26,9 @@ class DuepiRoomRelayText;
 class DuepiRoomDiagnosticSensor;
 class DuepiRoomStatusSensor;
 
-enum class DiagnosticMetric : uint8_t {
+// Keep this enum unscoped so ESPHome's Python codegen can emit the enumerators
+// from the duepi_room namespace when wiring metric configuration.
+enum DiagnosticMetric : uint8_t {
   SOURCE_AGE,
   PI_CORRECTION,
   COMPUTED_TARGET,
@@ -40,6 +42,8 @@ class DuepiRoomComponent : public PollingComponent {
   void setup() override;
   void update() override;
   void dump_config() override;
+
+  static DuepiRoomComponent *get_instance();
 
   Controller &controller() { return this->controller_; }
   const Controller &controller() const { return this->controller_; }
@@ -60,6 +64,7 @@ class DuepiRoomComponent : public PollingComponent {
     this->controller_.observe_raw_stove_temperature(temperature_c);
   }
   void observe_raw_stove_phase(uint16_t phase) { this->controller_.observe_raw_stove_phase(phase); }
+  void observe_stove_alarm(bool active) { this->controller_.observe_stove_alarm(active); }
   void observe_native_target(float target_c) { this->controller_.observe_native_target(target_c); }
   void observe_manual_native_target(float target_c) { this->controller_.observe_manual_native_target(target_c); }
   void observe_bridge_connected(bool connected) { this->controller_.observe_bridge_connected(connected); }
@@ -77,6 +82,8 @@ class DuepiRoomComponent : public PollingComponent {
 
  protected:
   void publish_decision_(const Decision &decision);
+
+  static DuepiRoomComponent *instance_;
 
   Controller controller_;
   Decision last_decision_{};

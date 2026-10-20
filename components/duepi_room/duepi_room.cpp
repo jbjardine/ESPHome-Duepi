@@ -29,7 +29,7 @@ Config make_config(int native_min, int native_max, float fallback_target, uint32
 
 const char *status_name(Status status) {
   switch (status) {
-    case Status::LOCAL:
+    case Status::LOCAL_ONLY:
       return "local";
     case Status::WAITING_STOVE:
       return "waiting_stove";
@@ -61,7 +61,7 @@ bool same_float(float left, float right) {
 
 bool parse_mode(const std::string &value, Mode *mode, size_t *index) {
   if (value == "Local") {
-    *mode = Mode::LOCAL;
+    *mode = Mode::LOCAL_ONLY;
     *index = 0;
     return true;
   }
@@ -71,7 +71,7 @@ bool parse_mode(const std::string &value, Mode *mode, size_t *index) {
     return true;
   }
   if (value == "Compensation + PI") {
-    *mode = Mode::PI;
+    *mode = Mode::PI_CONTROL;
     *index = 2;
     return true;
   }
@@ -80,11 +80,11 @@ bool parse_mode(const std::string &value, Mode *mode, size_t *index) {
 
 const char *mode_name(Mode mode) {
   switch (mode) {
-    case Mode::LOCAL:
+    case Mode::LOCAL_ONLY:
       return "Local";
     case Mode::COMPENSATION:
       return "Compensation";
-    case Mode::PI:
+    case Mode::PI_CONTROL:
       return "Compensation + PI";
   }
   return "Local";
@@ -100,7 +100,12 @@ DuepiRoomComponent::DuepiRoomComponent(int native_min, int native_max, float fal
                               integral_limit, correction_limit),
                   []() { return millis(); }) {}
 
+DuepiRoomComponent *DuepiRoomComponent::instance_ = nullptr;
+
+DuepiRoomComponent *DuepiRoomComponent::get_instance() { return instance_; }
+
 void DuepiRoomComponent::setup() {
+  instance_ = this;
   this->last_decision_ = this->controller_.poll();
   this->publish_decision_(this->last_decision_);
 }
@@ -134,7 +139,7 @@ void DuepiRoomComponent::request_native_mode(bool heat) {
   // This is the only command-mode event. Stove observations never enter this path.
   this->controller_.on_explicit_mode_command(heat);
   if (!heat && this->mode_select_ != nullptr)
-    this->mode_select_->publish_mode(Mode::LOCAL, true);
+    this->mode_select_->publish_mode(Mode::LOCAL_ONLY, true);
   this->publish_decision_(this->controller_.poll());
   for (auto *trigger : this->native_mode_triggers_) {
     if (trigger != nullptr)
@@ -220,7 +225,6 @@ void DuepiRoomClimate::publish_decision(const Decision &decision, float room_tar
 
 climate::ClimateTraits DuepiRoomClimate::traits() {
   climate::ClimateTraits traits;
-  traits.set_supports_current_temperature(true);
   traits.set_supported_modes({climate::CLIMATE_MODE_OFF, climate::CLIMATE_MODE_HEAT});
   const int minimum = this->parent_ != nullptr ? this->parent_->native_min() : 10;
   const int maximum = this->parent_ != nullptr ? this->parent_->native_max() : 35;
@@ -249,13 +253,13 @@ void DuepiRoomClimate::control(const climate::ClimateCall &call) {
 }
 
 void DuepiRoomModeSelect::setup() {
-  Mode selected_mode = Mode::LOCAL;
+  Mode selected_mode = Mode::LOCAL_ONLY;
   size_t selected_index = 0;
   this->preference_ = global_preferences->make_preference<size_t>(this->get_preference_hash());
   size_t restored_index = 0;
   if (this->preference_.load(&restored_index) && restored_index < 3) {
     selected_index = restored_index;
-    selected_mode = restored_index == 1 ? Mode::COMPENSATION : restored_index == 2 ? Mode::PI : Mode::LOCAL;
+    selected_mode = restored_index == 1 ? Mode::COMPENSATION : restored_index == 2 ? Mode::PI_CONTROL : Mode::LOCAL_ONLY;
   }
   if (this->parent_ != nullptr)
     this->parent_->set_mode_from_select(selected_mode);
@@ -335,3 +339,65 @@ void DuepiRoomStatusSensor::publish_decision(const Decision &decision) {
 
 }  // namespace duepi_room
 }  // namespace esphome
+
+// Base-package YAML uses these no-ID entry points under USE_DUEPI_ROOM. This
+// keeps ESPHome's YAML ID resolver independent of the opt-in package.
+void duepi_room_observe_raw_stove_temperature(float temperature_c) {
+  auto *component = esphome::duepi_room::DuepiRoomComponent::get_instance();
+  esphome::duepi_room::duepi_room_observe_raw_stove_temperature(component, temperature_c);
+}
+
+void duepi_room_observe_raw_stove_phase(uint16_t phase) {
+  auto *component = esphome::duepi_room::DuepiRoomComponent::get_instance();
+  esphome::duepi_room::duepi_room_observe_raw_stove_phase(component, phase);
+}
+
+void duepi_room_observe_native_target(float target_c) {
+  auto *component = esphome::duepi_room::DuepiRoomComponent::get_instance();
+  esphome::duepi_room::duepi_room_observe_native_target(component, target_c);
+}
+
+void duepi_room_observe_manual_native_target(float target_c) {
+  auto *component = esphome::duepi_room::DuepiRoomComponent::get_instance();
+  esphome::duepi_room::duepi_room_observe_manual_native_target(component, target_c);
+}
+
+void duepi_room_observe_stove_alarm(bool active) {
+  if (auto *component = esphome::duepi_room::DuepiRoomComponent::get_instance())
+    component->observe_stove_alarm(active);
+}
+
+void duepi_room_observe_bridge_connected(bool connected) {
+  auto *component = esphome::duepi_room::DuepiRoomComponent::get_instance();
+  esphome::duepi_room::duepi_room_observe_bridge_connected(component, connected);
+}
+
+void duepi_room_observe_uart_availability(bool available) {
+  auto *component = esphome::duepi_room::DuepiRoomComponent::get_instance();
+  esphome::duepi_room::duepi_room_observe_uart_availability(component, available);
+}
+
+bool duepi_room_authorize_rf2_emission(int target) {
+  auto *component = esphome::duepi_room::DuepiRoomComponent::get_instance();
+  return esphome::duepi_room::duepi_room_authorize_rf2_emission(component, target);
+}
+
+int duepi_room_native_min() {
+  auto *component = esphome::duepi_room::DuepiRoomComponent::get_instance();
+  return component != nullptr ? component->native_min() : 10;
+}
+
+int duepi_room_native_max() {
+  auto *component = esphome::duepi_room::DuepiRoomComponent::get_instance();
+  return component != nullptr ? component->native_max() : 35;
+}
+
+bool duepi_room_on_rf2_emitted(int target) {
+  auto *component = esphome::duepi_room::DuepiRoomComponent::get_instance();
+  return esphome::duepi_room::duepi_room_on_rf2_emitted(component, target);
+}
+
+void duepi_room_on_rf2_not_emitted() {
+  auto *component = esphome::duepi_room::DuepiRoomComponent::get_instance();
+  esphome::duepi_room::duepi_room_on_rf2_not_emitted(component);
+}

@@ -244,7 +244,7 @@ TEST(pi_integrates_only_on_distinct_samples_and_the_first_sample_has_zero_elapse
   fixture.config.kp = 0.0F;
   fixture.config.ki_per_hour = 0.5F;
   fixture.config.native_max = 35;
-  fixture.prepare(Mode::PI, 20.0F, 19.0F, 23.0F, 24.0F, 1, "1792485000123456");
+  fixture.prepare(Mode::PI_CONTROL, 20.0F, 19.0F, 23.0F, 24.0F, 1, "1792485000123456");
   Decision first = fixture.controller.poll();
   CHECK_NEAR(first.integral, 0.0, 0.0001);
 
@@ -265,7 +265,7 @@ TEST(pi_anti_windup_blocks_integral_growth_at_correction_and_native_output_limit
   correction_limit.config.kp = 1.0F;
   correction_limit.config.ki_per_hour = 0.5F;
   correction_limit.config.correction_limit = 0.5F;
-  correction_limit.prepare(Mode::PI, 20.0F, 19.0F, 23.0F, 23.5F);
+  correction_limit.prepare(Mode::PI_CONTROL, 20.0F, 19.0F, 23.0F, 23.5F);
   correction_limit.controller.poll();
   correction_limit.now += 60U * 60U * 1000U;
   correction_limit.send_sample(2, 19.0F, "1792488600123456");
@@ -275,7 +275,7 @@ TEST(pi_anti_windup_blocks_integral_growth_at_correction_and_native_output_limit
   native_limit.config.kp = 0.0F;
   native_limit.config.ki_per_hour = 0.5F;
   native_limit.config.native_max = 25;
-  native_limit.prepare(Mode::PI, 20.0F, 19.0F, 24.0F, 25.0F);
+  native_limit.prepare(Mode::PI_CONTROL, 20.0F, 19.0F, 24.0F, 25.0F);
   native_limit.controller.poll();
   native_limit.now += 60U * 60U * 1000U;
   native_limit.send_sample(2, 19.0F, "1792488600123456");
@@ -288,7 +288,7 @@ TEST(pi_allows_integral_unwinding_when_error_reverses) {
   Fixture fixture;
   fixture.config.kp = 0.0F;
   fixture.config.ki_per_hour = 0.5F;
-  fixture.prepare(Mode::PI, 20.0F, 19.0F, 23.0F, 24.0F);
+  fixture.prepare(Mode::PI_CONTROL, 20.0F, 19.0F, 23.0F, 24.0F);
   fixture.controller.poll();
   fixture.now += 60U * 60U * 1000U;
   fixture.send_sample(2, 19.0F, "1792488600123456");
@@ -399,9 +399,9 @@ TEST(malformed_relay_input_cannot_unlock_startup_fallback) {
 
 TEST(local_mode_never_requests_a_fallback_or_automatic_target) {
   Fixture fixture;
-  fixture.prepare(Mode::LOCAL, 20.0F, 18.0F, 23.0F, 23.0F);
+  fixture.prepare(Mode::LOCAL_ONLY, 20.0F, 18.0F, 23.0F, 23.0F);
   const Decision decision = fixture.controller.poll();
-  CHECK(decision.status == Status::LOCAL);
+  CHECK(decision.status == Status::LOCAL_ONLY);
   CHECK(!decision.target_requested);
 }
 
@@ -421,6 +421,34 @@ TEST(postboot_inputs_and_a_stable_burning_phase_are_required_before_regulation) 
   CHECK(burning.target_requested);
 }
 
+TEST(nonzero_stove_error_suspends_regulation_until_normal_observations_resume) {
+  Fixture fixture;
+  fixture.config.ki_per_hour = 0.5F;
+  fixture.prepare(Mode::PI_CONTROL, 20.0F, 19.0F, 23.0F, 24.0F);
+  fixture.controller.poll();
+  fixture.now += 60U * 60U * 1000U;
+  fixture.send_sample(2, 19.0F, "1792488600123456");
+  CHECK(fixture.controller.poll().integral > 0.0F);
+
+  fixture.controller.observe_stove_alarm(true);
+  const Decision alarmed = fixture.controller.poll();
+  CHECK(alarmed.status == Status::STOVE_INACTIVE);
+  CHECK(!alarmed.target_requested);
+  CHECK_NEAR(alarmed.integral, 0.0, 0.0001);
+
+  fixture.controller.observe_stove_alarm(false);
+  const Decision after_alarm_clear = fixture.controller.poll();
+  CHECK(after_alarm_clear.status == Status::WAITING_STOVE);
+  CHECK(!after_alarm_clear.target_requested);
+
+  fixture.refresh_stove_inputs();
+  fixture.send_sample(3, 18.0F, "1792492200123456");
+  const Decision resumed = fixture.controller.poll();
+  CHECK(resumed.status == Status::REGULATING);
+  CHECK(resumed.target_requested);
+  CHECK_NEAR(resumed.integral, 0.0, 0.0001);
+}
+
 TEST(stale_raw_stove_temperature_phase_or_native_target_blocks_automatic_writes) {
   Fixture fixture;
   fixture.config.max_stove_age_ms = 45000;
@@ -436,7 +464,7 @@ TEST(manual_native_target_and_two_stable_divergent_readbacks_latch_local) {
   manual.prepare();
   manual.controller.observe_manual_native_target(28.0F);
   const Decision after_manual = manual.controller.poll();
-  CHECK(after_manual.status == Status::LOCAL);
+  CHECK(after_manual.status == Status::LOCAL_ONLY);
   CHECK(!after_manual.target_requested);
   CHECK_NEAR(after_manual.native_target, 28.0, 0.001);
 
@@ -447,7 +475,7 @@ TEST(manual_native_target_and_two_stable_divergent_readbacks_latch_local) {
   readback.controller.observe_native_target(24.0F);
   CHECK(readback.controller.mode() == Mode::COMPENSATION);
   readback.controller.observe_native_target(24.0F);
-  CHECK(readback.controller.mode() == Mode::LOCAL);
+  CHECK(readback.controller.mode() == Mode::LOCAL_ONLY);
   CHECK_NEAR(readback.controller.poll().native_target, 24.0, 0.001);
 }
 
@@ -473,16 +501,16 @@ TEST(bridge_target_change_latches_local_on_disconnect) {
   fixture.controller.observe_bridge_connected(true);
   fixture.controller.observe_native_target(24.0F);
   fixture.controller.observe_bridge_connected(false);
-  CHECK(fixture.controller.mode() == Mode::LOCAL);
-  CHECK(fixture.controller.poll().status == Status::LOCAL);
+  CHECK(fixture.controller.mode() == Mode::LOCAL_ONLY);
+  CHECK(fixture.controller.poll().status == Status::LOCAL_ONLY);
 }
 
 TEST(explicit_off_latches_local_but_heat_needs_a_new_postcommand_phase_observation) {
   Fixture off;
   off.prepare();
   off.controller.on_explicit_mode_command(false);
-  CHECK(off.controller.mode() == Mode::LOCAL);
-  CHECK(off.controller.poll().status == Status::LOCAL);
+  CHECK(off.controller.mode() == Mode::LOCAL_ONLY);
+  CHECK(off.controller.poll().status == Status::LOCAL_ONLY);
 
   Fixture heat;
   heat.prepare();
@@ -498,9 +526,9 @@ TEST(explicit_off_latches_local_but_heat_needs_a_new_postcommand_phase_observati
   CHECK(heating.target_requested);
 
   Fixture local;
-  local.prepare(Mode::LOCAL);
+  local.prepare(Mode::LOCAL_ONLY);
   local.controller.on_explicit_mode_command(true);
-  CHECK(local.controller.mode() == Mode::LOCAL);
+  CHECK(local.controller.mode() == Mode::LOCAL_ONLY);
 }
 
 TEST(uart_busy_prevents_requests_and_reported_emission_starts_confirmation) {
@@ -645,7 +673,7 @@ TEST(new_generation_resets_sequence_and_pi_history) {
   Fixture fixture;
   fixture.config.kp = 0.0F;
   fixture.config.ki_per_hour = 0.5F;
-  fixture.prepare(Mode::PI, 20.0F, 19.0F, 23.0F, 24.0F);
+  fixture.prepare(Mode::PI_CONTROL, 20.0F, 19.0F, 23.0F, 24.0F);
   fixture.controller.poll();
   fixture.now += 60000;
   const std::string generation = "fedcba9876543210fedcba9876543210";
