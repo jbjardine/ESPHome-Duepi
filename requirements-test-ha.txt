@@ -1,0 +1,14 @@
+# Test runtime pinned to the Capinghem reference version. The fixture source is
+# the official HA Core tests/ tree from tag 2026.10.2, supplied through PYTHONPATH.
+# pytest-homeassistant-custom-component 0.13.316 cannot load against this HA
+# version because it imports the removed homeassistant.runner.HassEventLoopPolicy.
+homeassistant==2026.10.2
+pytest==9.0.3
+pytest-asyncio==1.4.0
+freezegun==1.5.5
+pytest-socket==0.8.1
+execnet==2.1.2
+requests-mock==1.12.1
+respx==0.23.1
+syrupy==6.1.1
+paho-mqtt==2.1.0

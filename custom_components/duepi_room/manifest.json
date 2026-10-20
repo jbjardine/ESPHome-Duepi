@@ -1,0 +1,12 @@
+{
+  "domain": "duepi_room",
+  "name": "Duepi Room Companion",
+  "version": "0.1.0",
+  "documentation": "https://github.com/jbjardine/ESPHome-Duepi",
+  "requirements": [],
+  "dependencies": [],
+  "codeowners": ["@jbjardine"],
+  "config_flow": true,
+  "integration_type": "hub",
+  "iot_class": "local_push"
+}
