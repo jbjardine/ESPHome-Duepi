@@ -199,7 +199,6 @@ bool Controller::observe_relay(const RelayMessage &message) {
     this->generation_ = message.generation;
     this->has_sequence_ = false;
     this->source_present_ = false;
-    this->source_invalidated_ = false;
     this->reset_integral_();
     this->cancel_request_();
     this->fallback_done_ = false;
@@ -213,11 +212,10 @@ bool Controller::observe_relay(const RelayMessage &message) {
   this->last_sequence_ = message.sequence;
   this->has_sequence_ = true;
   this->source_packet_ms_ = this->now_();
-  this->source_packet_seen_ = true;
+  this->accepted_relay_packet_seen_ = true;
   this->source_ = message;
   if (!message.valid) {
     this->source_present_ = false;
-    this->source_invalidated_ = true;
     this->reset_integral_();
     this->cancel_request_();
     if (had_usable_source)
@@ -226,7 +224,6 @@ bool Controller::observe_relay(const RelayMessage &message) {
   }
 
   this->source_present_ = true;
-  this->source_invalidated_ = false;
   this->fallback_done_ = false;
   if (this->request_offered_ && this->offered_fallback_)
     this->cancel_request_();
@@ -236,7 +233,7 @@ bool Controller::observe_relay(const RelayMessage &message) {
 }
 
 void Controller::invalidate_relay_source() {
-  this->clear_source_(true);
+  this->clear_source_();
 }
 
 void Controller::observe_manual_native_target(float target_c) {
@@ -293,15 +290,15 @@ void Controller::observe_bridge_connected(bool connected) {
   this->last_readback_valid_ = false;
   this->bridge_baseline_valid_ = false;
   this->bridge_latest_target_valid_ = false;
-  this->clear_source_(true);
+  this->clear_source_();
   this->reset_integral_();
   this->cancel_request_();
 }
 
 void Controller::observe_uart_availability(bool available) {
   this->uart_available_ = available;
-  if (!available)
-    this->cancel_request_();
+  // The shared RF2 path may already be transmitting an authorized offer. It
+  // must call on_rf2_not_emitted() if the attempt is abandoned.
 }
 
 Decision Controller::poll() {
@@ -332,8 +329,7 @@ Decision Controller::poll() {
   if (!this->source_usable_(now)) {
     this->reset_integral_();
     this->cancel_request_();
-    if (!this->source_packet_seen_ && !this->source_invalidated_ &&
-        elapsed_ms(now, this->boot_ms_) < this->config_.relay_silence_ms)
+    if (!this->accepted_relay_packet_seen_)
       return this->make_decision_(Status::WAITING_SOURCE);
 
     Decision decision = this->make_decision_(Status::FALLBACK);
@@ -424,7 +420,9 @@ bool Controller::authorize_rf2_emission(int target) const {
 }
 
 bool Controller::on_rf2_emitted(int target) {
-  if (!this->authorize_rf2_emission(target))
+  // Emission is an after-the-fact notification. Rechecking permission here
+  // could lose a real send when UART availability changes during transmission.
+  if (!this->request_offered_ || this->offered_target_ != target)
     return false;
   const uint32_t now = this->now_();
   this->pending_confirmation_ = true;
@@ -490,11 +488,9 @@ void Controller::reset_after_input_loss_() {
   this->cancel_request_();
 }
 
-void Controller::clear_source_(bool mark_seen) {
+void Controller::clear_source_() {
   const bool had_source = this->source_present_;
   this->source_present_ = false;
-  this->source_invalidated_ = mark_seen;
-  this->source_packet_seen_ = this->source_packet_seen_ || mark_seen;
   this->reset_integral_();
   this->cancel_request_();
   if (had_source)

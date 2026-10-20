@@ -116,7 +116,7 @@ class Controller {
   void reset_integral_();
   void cancel_request_();
   void reset_after_input_loss_();
-  void clear_source_(bool mark_seen);
+  void clear_source_();
   void refresh_confirmation_timeout_(uint32_t now);
   bool active_stove_(uint32_t now) const;
   Decision make_decision_(Status status) const;
@@ -150,9 +150,8 @@ class Controller {
 
   RelayMessage source_;
   uint32_t source_packet_ms_{0};
-  bool source_packet_seen_{false};
+  bool accepted_relay_packet_seen_{false};
   bool source_present_{false};
-  bool source_invalidated_{false};
   std::string generation_;
   uint32_t last_sequence_{0};
   bool has_sequence_{false};

@@ -95,6 +95,21 @@ struct Fixture {
     CHECK(controller.observe_relay(message(sequence, room_temperature, sample_id)));
   }
 
+  void prepare_without_relay(Mode mode = Mode::COMPENSATION) {
+    controller = Controller(config, [this]() { return now; });
+    controller.set_mode(mode);
+    controller.observe_raw_stove_temperature(23.0F);
+    controller.observe_raw_stove_phase(0x0201);
+    controller.observe_native_target(23.0F);
+    controller.observe_uart_availability(true);
+  }
+
+  void refresh_stove_inputs() {
+    controller.observe_raw_stove_temperature(23.0F);
+    controller.observe_raw_stove_phase(0x0201);
+    controller.observe_native_target(23.0F);
+  }
+
   void send_sample(uint32_t sequence, float temperature, const std::string &sample_id, uint32_t age = 0,
                    const std::string &generation = "0123456789abcdef0123456789abcdef") {
     CHECK(controller.observe_relay(message(sequence, temperature, sample_id, age, generation)));
@@ -342,18 +357,44 @@ TEST(malformed_source_invalidates_current_source_without_accepting_a_replay) {
   CHECK(!fixture.controller.observe_relay(message(1, 18.0F, "1792485000123456")));
 }
 
-TEST(no_initial_source_waits_for_the_relay_deadline_then_falls_back) {
+TEST(no_initial_source_waits_for_an_accepted_postboot_packet_before_fallback) {
   Fixture fixture;
-  fixture.controller.set_mode(Mode::COMPENSATION);
-  fixture.controller.observe_raw_stove_temperature(23.0F);
-  fixture.controller.observe_raw_stove_phase(0x0201);
-  fixture.controller.observe_native_target(23.0F);
-  fixture.controller.observe_uart_availability(true);
+  fixture.config.max_stove_age_ms = 45000;
+  fixture.prepare_without_relay();
   CHECK(fixture.controller.poll().status == Status::WAITING_SOURCE);
-  fixture.now += 180001;
-  const Decision expired = fixture.controller.poll();
-  CHECK(expired.status == Status::FALLBACK);
-  CHECK(expired.target_requested);
+  for (int i = 0; i < 6; ++i) {
+    fixture.now += 30000;
+    fixture.refresh_stove_inputs();
+  }
+  const Decision still_waiting = fixture.controller.poll();
+  CHECK(still_waiting.status == Status::WAITING_SOURCE);
+  CHECK(!still_waiting.target_requested);
+
+  RelayMessage invalid;
+  invalid.version = 1;
+  invalid.generation = "0123456789abcdef0123456789abcdef";
+  invalid.sequence = 1;
+  invalid.valid = false;
+  invalid.age_seconds = 0;
+  CHECK(fixture.controller.observe_relay(invalid));
+  const Decision fallback = fixture.controller.poll();
+  CHECK(fallback.status == Status::FALLBACK);
+  CHECK(fallback.target_requested);
+}
+
+TEST(malformed_relay_input_cannot_unlock_startup_fallback) {
+  Fixture fixture;
+  fixture.config.max_stove_age_ms = 45000;
+  fixture.prepare_without_relay();
+  fixture.controller.invalidate_relay_source();
+  for (int i = 0; i < 6; ++i) {
+    fixture.now += 30000;
+    fixture.refresh_stove_inputs();
+  }
+
+  const Decision still_waiting = fixture.controller.poll();
+  CHECK(still_waiting.status == Status::WAITING_SOURCE);
+  CHECK(!still_waiting.target_requested);
 }
 
 TEST(local_mode_never_requests_a_fallback_or_automatic_target) {
@@ -477,6 +518,40 @@ TEST(uart_busy_prevents_requests_and_reported_emission_starts_confirmation) {
   CHECK(fixture.controller.authorize_rf2_emission(requested.target));
   CHECK(fixture.controller.on_rf2_emitted(requested.target));
   CHECK(fixture.controller.poll().status == Status::AWAITING_CONFIRMATION);
+}
+
+TEST(actual_emission_is_recorded_after_uart_becomes_busy_and_confirms_from_readback) {
+  Fixture fixture;
+  fixture.prepare();
+  const Decision requested = fixture.controller.poll();
+  CHECK(requested.target_requested);
+  CHECK(fixture.controller.authorize_rf2_emission(requested.target));
+
+  fixture.now += 1000;
+  fixture.controller.observe_uart_availability(false);
+  CHECK(fixture.controller.on_rf2_emitted(requested.target));
+  CHECK(fixture.controller.poll().status == Status::AWAITING_CONFIRMATION);
+
+  fixture.controller.observe_native_target(static_cast<float>(requested.target));
+  const Decision confirmed = fixture.controller.poll();
+  CHECK(confirmed.status == Status::REGULATING);
+  CHECK(!confirmed.target_requested);
+}
+
+TEST(actual_emission_after_uart_busy_anchors_the_confirmation_timeout_to_emission) {
+  Fixture fixture;
+  fixture.prepare();
+  const Decision requested = fixture.controller.poll();
+  CHECK(requested.target_requested);
+  CHECK(fixture.controller.authorize_rf2_emission(requested.target));
+
+  fixture.now += 5000;
+  fixture.controller.observe_uart_availability(false);
+  CHECK(fixture.controller.on_rf2_emitted(requested.target));
+  fixture.now += 29999;
+  CHECK(fixture.controller.poll().status == Status::AWAITING_CONFIRMATION);
+  fixture.now += 1;
+  CHECK(fixture.controller.poll().status == Status::COMMAND_UNCONFIRMED);
 }
 
 TEST(rf2_request_cancellation_never_starts_confirmation) {
