@@ -2,7 +2,7 @@
 
 Code produit : `c1c0f5735df474d74e5bafae631394beefc1501e`. Branche personnelle `codjardine/remote-room-regulation`, push vers le fork via `origin` uniquement.
 
-Ce rapport remplace, pour l'installation courante, les instructions de complément HA et la réserve du banc de la [validation initiale](2026-10-20-duepi-room.md), qui reste historique. Il couvre l'amendement de réarmement `aebed0d` puis le transport natif. La revue ciblée `aebed0d..c1c0f57` est approuvée sans constat important; la mise en service réelle est encore en préparation; aucun succès OTA ou thermique n'est revendiqué à ce stade.
+Ce rapport remplace, pour l'installation courante, les instructions de complément HA et la réserve du banc de la [validation initiale](2026-10-20-duepi-room.md), qui reste historique. Il couvre l'amendement de réarmement `aebed0d` puis le transport natif. La revue ciblée `aebed0d..c1c0f57` est approuvée sans constat important; la mise en service réelle et le retour API sont maintenant vérifiés. La régulation thermique reste à tester avec une source fraîche.
 
 ## Fonctionnement retenu
 
@@ -41,8 +41,16 @@ Les [empreintes et tailles des images](2026-10-20-duepi-native-artifacts.json) d
 - Ruling: l'affichage Heat/Off suit les seules phases RD9000 reconnues, sans commande. Une erreur de correspondance pourrait affecter l'affichage; la garde de régulation reste séparée et n'autorise que `0x0201`. Une phase inconnue conserve le dernier affichage.
 - Les sources HA et limites Fahrenheit sont converties vers le calcul Celsius. Une valeur isolée telle que68 ne suffit pas à identifier les unités réellement échangées sur UART; aucune autodétection UART n'est ajoutée.
 
-- Ruling: accepter le délai initial d'au plus60s lorsque HA arrive après un autre client API ou avant son abonnement aux appels. Le retry périodique continue; la régulation active reste bloquée sans source utilisable. Coût: le premier affichage peut attendre un cycle. Aucun correctif supplémentaire du transport n'est requis pour ce cas borné.
+- Ruling: accepter le délai initial d'au plus60 s lorsque HA arrive après un autre client API ou avant son abonnement aux appels. Le retry périodique continue; la régulation active reste bloquée sans source utilisable. Coût: le premier affichage peut attendre un cycle. Aucun correctif supplémentaire du transport n'est requis pour ce cas borné.
 
 ## Mise en service réelle
 
-Revue ciblée approuvée; installation en attente. Vérifier après OTA le retour API complet, l'ancienneté croissante sans nouvelle publication, les anciennes entités, RC6000 et RD4000. Conserver Local si la source dépasse15min; ne pas forcer une mesure ou augmenter le seuil. L'essai thermique et l'intérêt de la PI restent distincts de la compilation et du transport.
+Revue ciblée approuvée. L'image privée a été flashée sur le module réel par OTA chiffrée (26,51 s de transfert). Son API rapporte exactement le timestamp de compilation attendu. Les22 anciennes entités et3anciens services sont conservés;11 entités et le rappel natif sont ajoutés. Le fichier ESPHome sauvegardé sur le serveur valide aussi ses sources publiées2026.9.1.
+
+Le seul VTherm dédié au poêle a été désactivé sans ordre Off; ses données/options sont préservées et les huit autres entrées sont identiques. La permission d'action HA du seul module est activée. Aucun complément HA, redémarrage global, paramètre constructeur ou radiateur modifié.
+
+Le champ source est configuré. L'ESP a accepté l'âge réel de la mesure:1470 s puis1905 s sur des relevés espacés d'environ7 min; la source reste datée de sa vraie publication. Son mode resteLocal, cible pièce 20 °C et correctionPI 0. Le poêle conserve sa consigne native19 °C et sa puissance appliquéeRD4000P1. La sonde locale historique a son filtre existant; le contrôleur utilise toujours RD1000 brut.
+
+Le bloc Poêle de la tablette contient cible salon, mode, champ source, message Manuel, avertissement de mesure ancienne et bouton Réactiver. Un contrôle API confirme que ce seul bloc a changé. Le template d'avertissement passe le moteur HA strict. Le rendu visuel n'est pas revendiqué: la capture serveur est désactivée et la tentative navigateur a été interrompue par une reprise utilisateur; aucune interaction après cette reprise.
+
+**Limite terrain:** aucune activation de Compensation ni pression du bouton avec cette mesure trop ancienne. La sonde a montré un intervalle proche d'une heure, incompatible avec le maximum 15 min pendant une partie du temps. Ne pas allonger silencieusement le seuil. L'aller-retour API/âge est prouvé, mais l'application d'une nouvelle correctionRF2/RC6000 et la précision thermique de ce contrôleur restent à vérifier avec des données fraîches, puis la PI dans un second temps. Le seuil, le thermostat radiateurs et les paramètres constructeur sont conservés.
