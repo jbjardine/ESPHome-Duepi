@@ -1,0 +1,34 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "device_id": "ESPHome device",
+          "source_entity_id": "Room temperature sensor"
+        }
+      }
+    },
+    "error": {
+      "unsupported_firmware": "This ESPHome device does not expose the Duepi Room Relay v1 text entity.",
+      "ambiguous_relay": "More than one Duepi Room Relay v1 text entity was found.",
+      "invalid_source": "Select a temperature sensor.",
+      "unsupported_unit": "Select a sensor that reports temperature in Celsius or Fahrenheit."
+    },
+    "abort": {
+      "already_configured": "This ESPHome device is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "source_entity_id": "Room temperature sensor"
+        }
+      }
+    },
+    "error": {
+      "invalid_source": "Select a temperature sensor.",
+      "unsupported_unit": "Select a sensor that reports temperature in Celsius or Fahrenheit."
+    }
+  }
+}

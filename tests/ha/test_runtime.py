@@ -48,6 +48,7 @@ def add_relay(hass):
         device_id=device.id,
         original_name=RELAY_NAME,
     )
+    hass.states.async_set(relay.entity_id, "ready")
     return device, relay
 
 
@@ -99,6 +100,7 @@ async def test_setup_sends_serialized_snapshot_to_renamed_relay(
     registry.async_update_entity(
         relay.entity_id, new_entity_id="text.user_renamed_relay"
     )
+    hass.states.async_set("text.user_renamed_relay", "ready")
     hass.states.async_set(SENSOR_ID, "68", {"unit_of_measurement": "°F"})
     calls = capture_text_service(hass)
     entry = add_entry(hass, device, relay)
@@ -116,6 +118,24 @@ async def test_setup_sends_serialized_snapshot_to_renamed_relay(
     assert packet["age_s"] == 0
     assert packet["sample_id"].isdigit()
     assert len(calls[0].data["value"].encode("utf-8")) <= 254
+
+
+async def test_missing_relay_state_waits_until_relay_is_ready(
+    hass, duepi_custom_components
+):
+    """The text service is not called until the relay entity has reported ready."""
+    device, relay = add_relay(hass)
+    hass.states.async_remove(relay.entity_id)
+    calls = capture_text_service(hass)
+    entry = add_entry(hass, device, relay)
+
+    await setup_runtime(hass, entry)
+
+    assert calls == []
+    hass.states.async_set(relay.entity_id, "ready")
+    await hass.async_block_till_done()
+
+    assert len(calls) == 1
 
 
 async def test_missing_source_is_explicitly_invalid_without_sample_id(

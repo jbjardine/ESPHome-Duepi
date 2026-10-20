@@ -1,0 +1,34 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "device_id": "Appareil ESPHome",
+          "source_entity_id": "Sonde de température de la pièce"
+        }
+      }
+    },
+    "error": {
+      "unsupported_firmware": "Cet appareil ESPHome ne fournit pas le relais texte Duepi Room Relay v1.",
+      "ambiguous_relay": "Plusieurs entités texte Duepi Room Relay v1 ont été trouvées.",
+      "invalid_source": "Sélectionnez une sonde de température.",
+      "unsupported_unit": "Sélectionnez une sonde exprimée en degrés Celsius ou Fahrenheit."
+    },
+    "abort": {
+      "already_configured": "Cet appareil ESPHome est déjà configuré."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "source_entity_id": "Sonde de température de la pièce"
+        }
+      }
+    },
+    "error": {
+      "invalid_source": "Sélectionnez une sonde de température.",
+      "unsupported_unit": "Sélectionnez une sonde exprimée en degrés Celsius ou Fahrenheit."
+    }
+  }
+}

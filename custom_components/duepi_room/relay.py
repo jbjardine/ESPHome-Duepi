@@ -255,7 +255,7 @@ class RelayRuntime:
             if relay is None:
                 return
             relay_state = self.hass.states.get(relay.entity_id)
-            if relay_state is not None and relay_state.state in _INVALID_STATES:
+            if relay_state is None or relay_state.state in _INVALID_STATES:
                 return
             if self.seq >= _MAX_COUNTER:
                 self.generation = uuid4().hex

@@ -6,6 +6,7 @@ from homeassistant.config_entries import SOURCE_USER
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.selector import DeviceSelector, EntitySelector
+from homeassistant.helpers.translation import async_get_translations
 import pytest
 import voluptuous as vol
 
@@ -81,6 +82,57 @@ async def test_config_flow_shows_esphome_device_and_temperature_sensor_selectors
     else:
         assert isinstance(selectors["source_entity_id"], EntitySelector)
         assert selectors["source_entity_id"].config["domain"] == ["sensor"]
+
+
+async def test_config_and_options_translations_load_through_home_assistant(
+    hass, duepi_custom_components
+) -> None:
+    """Home Assistant's translation loader exposes flow labels and errors."""
+    english = await async_get_translations(hass, "en", "config", [DOMAIN])
+    english_options = await async_get_translations(hass, "en", "options", [DOMAIN])
+    french = await async_get_translations(hass, "fr", "config", [DOMAIN])
+    french_options = await async_get_translations(hass, "fr", "options", [DOMAIN])
+
+    assert (
+        english["component.duepi_room.config.step.user.data.device_id"]
+        == "ESPHome device"
+    )
+    assert (
+        english["component.duepi_room.config.step.user.data.source_entity_id"]
+        == "Room temperature sensor"
+    )
+    assert (
+        english["component.duepi_room.config.error.unsupported_unit"]
+        == "Select a sensor that reports temperature in Celsius or Fahrenheit."
+    )
+    assert (
+        english_options["component.duepi_room.options.step.init.data.source_entity_id"]
+        == "Room temperature sensor"
+    )
+    assert (
+        english_options["component.duepi_room.options.error.unsupported_unit"]
+        == "Select a sensor that reports temperature in Celsius or Fahrenheit."
+    )
+    assert (
+        french["component.duepi_room.config.step.user.data.device_id"]
+        == "Appareil ESPHome"
+    )
+    assert (
+        french["component.duepi_room.config.step.user.data.source_entity_id"]
+        == "Sonde de température de la pièce"
+    )
+    assert (
+        french["component.duepi_room.config.error.unsupported_unit"]
+        == "Sélectionnez une sonde exprimée en degrés Celsius ou Fahrenheit."
+    )
+    assert (
+        french_options["component.duepi_room.options.step.init.data.source_entity_id"]
+        == "Sonde de température de la pièce"
+    )
+    assert (
+        french_options["component.duepi_room.options.error.unsupported_unit"]
+        == "Sélectionnez une sonde exprimée en degrés Celsius ou Fahrenheit."
+    )
 
 
 async def test_config_flow_rejects_esphome_device_without_fixed_relay_marker(
