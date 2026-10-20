@@ -1,0 +1,73 @@
+esphome:
+  name: duepi-room-native-test
+  build_path: /tmp/duepi-room-native-test-build
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+external_components:
+  - source:
+      type: local
+      path: ../../components
+    components: [duepi_room]
+
+logger:
+
+duepi_room:
+  id: duepi_room_main
+  native_min: 10
+  native_max: 35
+  fallback_target: 20
+  max_source_age: 15min
+  pi:
+    kp: 0.1
+    ki_per_hour: 0.025
+    integral_limit: 0.5
+    correction_limit: 1.0
+  on_rf2_target:
+    - lambda: ESP_LOGD("test", "RF2 target %d", target);
+  on_native_mode_command:
+    - lambda: ESP_LOGD("test", "Native mode heat=%d", heat);
+
+climate:
+  - platform: duepi_room
+    duepi_room_id: duepi_room_main
+    id: duepi_room_climate
+    name: "Room target"
+
+select:
+  - platform: duepi_room
+    duepi_room_id: duepi_room_main
+    id: duepi_room_mode
+    name: "Room regulation mode"
+
+number:
+  - platform: duepi_room
+    duepi_room_id: duepi_room_main
+    id: duepi_room_fallback
+    name: "Room fallback target"
+
+sensor:
+  - platform: duepi_room
+    duepi_room_id: duepi_room_main
+    metric: source_age
+    name: "Room source age"
+  - platform: duepi_room
+    duepi_room_id: duepi_room_main
+    metric: pi_correction
+    name: "Room PI correction"
+  - platform: duepi_room
+    duepi_room_id: duepi_room_main
+    metric: computed_target
+    name: "Room computed native target"
+
+text_sensor:
+  - platform: duepi_room
+    duepi_room_id: duepi_room_main
+    name: "Room regulation status"
+
+text:
+  - platform: duepi_room
+    duepi_room_id: duepi_room_main
