@@ -935,6 +935,16 @@ TEST(manual_native_target_and_two_stable_divergent_readbacks_shift_the_room_targ
   CHECK_NEAR(local.controller.room_target(), 20.0, 0.001);
 }
 
+TEST(replayed_unchanged_manual_target_keeps_the_room_target) {
+  Fixture fixture;
+  fixture.config.kp = 0.25F;
+  fixture.prepare(Mode::PI_CONTROL, 21.0F, 18.0F, 23.0F, 27.0F);
+  fixture.controller.poll();
+  fixture.controller.observe_manual_native_target(27.0F);
+  CHECK_NEAR(fixture.controller.room_target(), 21.0, 0.001);
+  CHECK(fixture.controller.mode() == Mode::PI_CONTROL);
+}
+
 TEST(manual_native_target_without_usable_source_shifts_the_room_target_by_the_delta) {
   Fixture fixture;
   fixture.prepare(Mode::COMPENSATION, 20.0F, 18.0F, 23.0F, 25.0F);

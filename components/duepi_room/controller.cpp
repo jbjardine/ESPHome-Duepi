@@ -349,7 +349,10 @@ void Controller::invalidate_relay_source() {
 void Controller::observe_manual_native_target(float target_c) {
   if (!std::isfinite(target_c))
     return;
-  this->shift_room_target_to_native_(target_c, this->native_target_, this->native_target_valid_);
+  // A thermostat refresh can replay the unchanged target; only a real change
+  // moves the room target.
+  if (!this->native_target_valid_ || std::fabs(target_c - this->native_target_) >= TARGET_EPSILON)
+    this->shift_room_target_to_native_(target_c, this->native_target_, this->native_target_valid_);
   this->cancel_request_();
   this->divergent_target_count_ = 0;
   this->native_target_ = target_c;
