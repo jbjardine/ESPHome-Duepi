@@ -355,6 +355,7 @@ void DuepiRoomClimate::publish_observed_mode(climate::ClimateMode mode) {
 climate::ClimateTraits DuepiRoomClimate::traits() {
   climate::ClimateTraits traits;
   traits.set_supported_modes({climate::CLIMATE_MODE_OFF, climate::CLIMATE_MODE_HEAT});
+  traits.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE);
   const int minimum = this->parent_ != nullptr ? this->parent_->native_min() : 10;
   const int maximum = this->parent_ != nullptr ? this->parent_->native_max() : 35;
   traits.set_visual_min_temperature(static_cast<float>(minimum));
@@ -377,8 +378,10 @@ void DuepiRoomClimate::control(const climate::ClimateCall &call) {
   }
   if (this->parent_ != nullptr)
     this->parent_->update();
-  else
-    this->publish_state();
+  // publish_decision() only republishes on a temperature change. Publish the
+  // accepted mode here, otherwise HA keeps the previous mode and the later
+  // phase readback is deduplicated against this unpublished value.
+  this->publish_state();
 }
 
 void DuepiRoomModeSelect::setup() {
