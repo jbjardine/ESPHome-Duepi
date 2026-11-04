@@ -49,6 +49,7 @@ Controller::Controller(Config config, MonotonicClock clock) : config_(config), c
   this->room_target_ = std::clamp(20.0F, static_cast<float>(this->config_.native_min),
                                  static_cast<float>(this->config_.native_max));
   this->boot_ms_ = this->now_();
+  this->source_wait_started_ms_ = this->boot_ms_;
 }
 
 void Controller::set_mode(Mode mode) {
@@ -183,7 +184,7 @@ void Controller::observe_native_target(float target_c) {
     this->last_readback_valid_ = true;
     this->divergent_target_count_ = 0;
     if (changed_target)
-      this->set_mode(Mode::LOCAL_ONLY);
+      this->shift_room_target_to_native_(target_c, this->bridge_baseline_target_, true);
   }
 
   if (this->pending_confirmation_) {
@@ -211,7 +212,8 @@ void Controller::observe_native_target(float target_c) {
         this->divergent_target_count_ = 1;
       }
       if (this->divergent_target_count_ >= 2) {
-        this->set_mode(Mode::LOCAL_ONLY);
+        this->shift_room_target_to_native_(target_c, this->last_readback_target_, this->last_readback_valid_);
+        this->divergent_target_count_ = 0;
         this->native_target_ = target_c;
         this->native_target_ms_ = now;
         this->native_target_valid_ = true;
@@ -315,6 +317,7 @@ bool Controller::begin_native_source_session(const std::string &generation) {
   this->source_packet_ms_ = 0;
   this->source_present_ = false;
   this->accepted_relay_packet_seen_ = false;
+  this->source_wait_started_ms_ = this->now_();
   this->fallback_done_ = false;
   this->reset_integral_();
   this->cancel_request_();
@@ -333,6 +336,7 @@ void Controller::end_native_source_session() {
   this->source_packet_ms_ = 0;
   this->source_present_ = false;
   this->accepted_relay_packet_seen_ = false;
+  this->source_wait_started_ms_ = this->now_();
   this->fallback_done_ = false;
   this->reset_integral_();
   this->cancel_request_();
@@ -343,19 +347,26 @@ void Controller::invalidate_relay_source() {
 }
 
 void Controller::observe_manual_native_target(float target_c) {
-  if (std::isfinite(target_c)) {
-    this->native_target_ = target_c;
-    this->native_target_ms_ = this->now_();
-    this->native_target_valid_ = true;
-    this->last_readback_target_ = target_c;
-    this->last_readback_valid_ = true;
-  }
-  this->set_mode(Mode::LOCAL_ONLY);
+  if (!std::isfinite(target_c))
+    return;
+  this->shift_room_target_to_native_(target_c, this->native_target_, this->native_target_valid_);
+  this->cancel_request_();
+  this->divergent_target_count_ = 0;
+  this->native_target_ = target_c;
+  this->native_target_ms_ = this->now_();
+  this->native_target_valid_ = true;
+  this->last_readback_target_ = target_c;
+  this->last_readback_valid_ = true;
 }
 
 void Controller::on_explicit_mode_command(bool heat) {
   if (!heat) {
-    this->set_mode(Mode::LOCAL_ONLY);
+    // OFF pauses the regulation without changing the selected mode. Wait for a
+    // new phase observation so a stale burning phase cannot trigger a write.
+    this->reset_integral_();
+    this->cancel_request_();
+    this->phase_after_heat_required_ = true;
+    this->required_phase_revision_ = this->stove_phase_revision_ + 1;
     return;
   }
   // HEAT is routed to the existing native mode path; it must not activate external regulation.
@@ -390,12 +401,12 @@ void Controller::observe_bridge_connected(bool connected) {
                               std::fabs(this->bridge_latest_target_ - this->bridge_baseline_target_) >=
                                   TARGET_EPSILON;
   this->bridge_connected_ = false;
-  if (changed_target)
-    this->set_mode(Mode::LOCAL_ONLY);
   this->stove_temperature_valid_ = false;
   this->stove_phase_valid_ = false;
   this->native_target_valid_ = false;
   this->last_readback_valid_ = false;
+  if (changed_target)
+    this->shift_room_target_to_native_(this->bridge_latest_target_, this->bridge_baseline_target_, true);
   this->bridge_baseline_valid_ = this->bridge_baseline_valid_ && !changed_target;
   this->bridge_latest_target_valid_ = false;
   this->clear_source_();
@@ -460,13 +471,19 @@ Decision Controller::poll() {
   if (!this->source_usable_(now)) {
     this->reset_integral_();
     this->cancel_request_();
-    if (!this->accepted_relay_packet_seen_)
+    // Without any accepted packet, give Home Assistant the relay grace period
+    // to deliver the first sample before falling back.
+    if (!this->accepted_relay_packet_seen_ &&
+        elapsed_ms(now, this->source_wait_started_ms_) < this->config_.relay_silence_ms)
       return this->make_decision_(Status::WAITING_SOURCE);
 
+    // Fallback: the stove regulates on its own probe toward the room target,
+    // without compensation.
+    const float fallback_c = this->room_target_valid_ ? this->room_target_ : this->config_.fallback_target;
     Decision decision = this->make_decision_(Status::FALLBACK);
-    const int fallback = this->clamp_native_(this->round_ties_up(this->config_.fallback_target));
+    const int fallback = this->clamp_native_(this->round_ties_up(fallback_c));
     decision.computed_target_available = true;
-    decision.unclamped_target = this->config_.fallback_target;
+    decision.unclamped_target = fallback_c;
     decision.computed_target = fallback;
     decision.correction = 0.0F;
     decision.integral = 0.0F;
@@ -712,6 +729,38 @@ void Controller::integrate_new_sample_(uint32_t now, float error, float stove_te
   this->has_integrated_sample_ = true;
   this->correction_ = this->calculate_correction_(error);
   (void) stove_temperature;
+}
+
+void Controller::shift_room_target_to_native_(float native_target_c, float reference_native_c,
+                                              bool reference_valid) {
+  if (this->mode_ == Mode::LOCAL_ONLY || !std::isfinite(native_target_c))
+    return;
+  const uint32_t now = this->now_();
+  float candidate;
+  if (this->source_usable_(now) && this->fresh_(this->stove_temperature_valid_, this->stove_temperature_ms_, now)) {
+    // Room target that makes the regulation output the chosen native target
+    // with the current measurements. The integral restarts with the new target.
+    const float span = native_target_c - this->stove_temperature_;
+    float error = span;
+    if (this->mode_ == Mode::PI_CONTROL) {
+      error = span / (1.0F + this->config_.kp);
+      if (this->config_.kp * error > this->config_.correction_limit)
+        error = span - this->config_.correction_limit;
+      else if (this->config_.kp * error < -this->config_.correction_limit)
+        error = span + this->config_.correction_limit;
+    }
+    candidate = this->source_.temperature_c + error;
+  } else if (reference_valid && std::isfinite(reference_native_c)) {
+    candidate = this->room_target_ + (native_target_c - reference_native_c);
+  } else {
+    return;
+  }
+  if (!std::isfinite(candidate))
+    return;
+  candidate = std::round(candidate * 10.0F) / 10.0F;
+  candidate = std::clamp(candidate, static_cast<float>(this->config_.native_min),
+                         static_cast<float>(this->config_.native_max));
+  this->set_room_target(candidate);
 }
 
 int Controller::round_ties_up(float value) {

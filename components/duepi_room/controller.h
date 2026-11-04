@@ -125,6 +125,9 @@ class Controller {
   Decision make_decision_(Status status) const;
   bool request_allowed_(bool fallback, int target, uint32_t now) const;
   float calculate_correction_(float error) const;
+  // Converts a native target chosen outside the regulation (HA stove card,
+  // stove panel, remote, official app) into the room target that yields it.
+  void shift_room_target_to_native_(float native_target_c, float reference_native_c, bool reference_valid);
   void integrate_new_sample_(uint32_t now, float error, float stove_temperature, float base);
 
   Config config_;
@@ -155,6 +158,7 @@ class Controller {
   RelayMessage source_;
   uint32_t source_packet_ms_{0};
   bool accepted_relay_packet_seen_{false};
+  uint32_t source_wait_started_ms_{0};
   bool native_source_session_active_{false};
   bool source_present_{false};
   std::string generation_;

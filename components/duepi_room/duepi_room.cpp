@@ -146,7 +146,7 @@ void DuepiRoomComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "Duepi room controller:");
   ESP_LOGCONFIG(TAG, "  Native range: %d..%d C", this->native_min(), this->native_max());
   ESP_LOGCONFIG(TAG, "  Relay marker: %s (%s)", DUEPI_ROOM_RELAY_NAME, DUEPI_ROOM_RELAY_OBJECT_ID);
-  ESP_LOGCONFIG(TAG, "  Relay payload max: 254 bytes; initial mode: Local");
+  ESP_LOGCONFIG(TAG, "  Relay payload max: 254 bytes; mode and room target kept in flash");
 }
 
 void DuepiRoomComponent::set_mode_from_select(Mode mode) {
@@ -158,9 +158,8 @@ void DuepiRoomComponent::set_mode_from_select(Mode mode) {
 
 void DuepiRoomComponent::request_native_mode(bool heat) {
   // This is the only command-mode event. Stove observations never enter this path.
+  // OFF pauses the regulation; the selected mode resumes at the next heat phase.
   this->controller_.on_explicit_mode_command(heat);
-  if (!heat && this->mode_select_ != nullptr)
-    this->mode_select_->publish_mode(Mode::LOCAL_ONLY, true);
   this->publish_decision_(this->controller_.poll());
   for (auto *trigger : this->native_mode_triggers_) {
     if (trigger != nullptr)
@@ -286,6 +285,33 @@ bool DuepiRoomComponent::set_room_target(float temperature_c) {
   return true;
 }
 
+void DuepiRoomComponent::init_room_target_preference_() {
+  if (this->room_target_pref_ready_)
+    return;
+  this->room_target_pref_ = global_preferences->make_preference<float>(fnv1_hash("duepi_room_target_flash"), true);
+  this->room_target_pref_ready_ = true;
+}
+
+bool DuepiRoomComponent::load_persisted_room_target(float *temperature_c) {
+  this->init_room_target_preference_();
+  float stored = NAN;
+  if (temperature_c == nullptr || !this->room_target_pref_.load(&stored) || !std::isfinite(stored))
+    return false;
+  this->persisted_room_target_ = stored;
+  *temperature_c = stored;
+  return true;
+}
+
+void DuepiRoomComponent::persist_room_target_() {
+  this->init_room_target_preference_();
+  const float target = this->controller_.room_target();
+  if (!std::isfinite(target) ||
+      (std::isfinite(this->persisted_room_target_) && std::fabs(target - this->persisted_room_target_) < 0.05F))
+    return;
+  if (this->room_target_pref_.save(&target))
+    this->persisted_room_target_ = target;
+}
+
 bool DuepiRoomComponent::set_fallback_target(float temperature_c) {
   if (!this->controller_.set_fallback_target(temperature_c))
     return false;
@@ -307,6 +333,7 @@ void DuepiRoomComponent::on_rf2_not_emitted() {
 }
 
 void DuepiRoomComponent::publish_decision_(const Decision &decision) {
+  this->persist_room_target_();
   if (this->room_climate_ != nullptr)
     this->room_climate_->publish_decision(decision, this->controller_.room_target());
   if (this->mode_select_ != nullptr)
@@ -325,8 +352,12 @@ void DuepiRoomClimate::setup() {
   this->mode = climate::CLIMATE_MODE_OFF;
   this->target_temperature = this->parent_ != nullptr ? this->parent_->controller().room_target() : 20.0F;
   auto restored = this->restore_state_();
+  float persisted = NAN;
+  if (this->parent_ != nullptr && this->parent_->load_persisted_room_target(&persisted) &&
+      this->parent_->set_room_target(persisted))
+    this->target_temperature = persisted;
   if (restored.has_value()) {
-    if (std::isfinite(restored->target_temperature) && this->parent_ != nullptr &&
+    if (!std::isfinite(persisted) && std::isfinite(restored->target_temperature) && this->parent_ != nullptr &&
         this->parent_->set_room_target(restored->target_temperature))
       this->target_temperature = restored->target_temperature;
     if (restored->mode == climate::CLIMATE_MODE_HEAT || restored->mode == climate::CLIMATE_MODE_OFF)
@@ -385,14 +416,15 @@ void DuepiRoomClimate::control(const climate::ClimateCall &call) {
 }
 
 void DuepiRoomModeSelect::setup() {
-  Mode selected_mode = Mode::LOCAL_ONLY;
-  size_t selected_index = 0;
-  this->preference_ = global_preferences->make_preference<size_t>(this->get_preference_hash());
+  // Flash-backed so the selected mode survives a power cut (ESP8266 RTC memory
+  // does not). Written only when the user changes the mode.
+  size_t selected_index = this->initial_index_ < 3 ? this->initial_index_ : 0;
+  this->preference_ = global_preferences->make_preference<size_t>(this->get_preference_hash() ^ 0x464C5348UL, true);
   size_t restored_index = 0;
-  if (this->preference_.load(&restored_index) && restored_index < 3) {
+  if (this->preference_.load(&restored_index) && restored_index < 3)
     selected_index = restored_index;
-    selected_mode = restored_index == 1 ? Mode::COMPENSATION : restored_index == 2 ? Mode::PI_CONTROL : Mode::LOCAL_ONLY;
-  }
+  const Mode selected_mode =
+      selected_index == 1 ? Mode::COMPENSATION : selected_index == 2 ? Mode::PI_CONTROL : Mode::LOCAL_ONLY;
   if (this->parent_ != nullptr)
     this->parent_->set_mode_from_select(selected_mode);
   this->publish_state(selected_index == 0 ? "Local" : selected_index == 1 ? "Compensation" : "Compensation + PI");

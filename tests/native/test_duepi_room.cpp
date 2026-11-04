@@ -596,11 +596,11 @@ TEST(cleaning_does_not_preserve_pi_after_source_loss_stop_unknown_phase_or_manua
     CHECK_NEAR(interrupted.integral, 0.0, 0.00001);
     CHECK(!interrupted.target_requested);
     if (interruption == 3) {
-      CHECK(interrupted.mode == Mode::LOCAL_ONLY);
+      CHECK(interrupted.mode == Mode::PI_CONTROL);
       CHECK_NEAR(interrupted.native_target, 25.0, 0.00001);
     }
     if (interruption == 4)
-      CHECK(interrupted.mode == Mode::LOCAL_ONLY);
+      CHECK(interrupted.mode == Mode::PI_CONTROL);
   }
 }
 
@@ -698,6 +698,18 @@ TEST(stale_or_explicitly_invalid_source_selects_fallback_once) {
   CHECK(invalid_fallback.target == 20);
 }
 
+TEST(fallback_uses_the_room_target_without_compensation) {
+  Fixture fixture;
+  fixture.prepare(Mode::COMPENSATION, 21.0F, 18.0F, 23.0F, 26.0F);
+  CHECK(!fixture.controller.poll().target_requested);
+  fixture.now += 901000;
+  fixture.send_sample(2, 18.0F, "1792485000123456", 901);
+  const Decision fallback = fixture.controller.poll();
+  CHECK(fallback.status == Status::FALLBACK);
+  CHECK(fallback.target_requested);
+  CHECK(fallback.target == 21);
+}
+
 TEST(malformed_source_invalidates_current_source_without_accepting_a_replay) {
   Fixture fixture;
   fixture.prepare(Mode::COMPENSATION, 20.0F, 18.0F, 23.0F, 23.0F);
@@ -714,7 +726,7 @@ TEST(no_initial_source_waits_for_an_accepted_postboot_packet_before_fallback) {
   fixture.config.max_stove_age_ms = 45000;
   fixture.prepare_without_relay();
   CHECK(fixture.controller.poll().status == Status::WAITING_SOURCE);
-  for (int i = 0; i < 6; ++i) {
+  for (int i = 0; i < 5; ++i) {
     fixture.now += 30000;
     fixture.refresh_stove_inputs();
   }
@@ -732,6 +744,24 @@ TEST(no_initial_source_waits_for_an_accepted_postboot_packet_before_fallback) {
   const Decision fallback = fixture.controller.poll();
   CHECK(fallback.status == Status::FALLBACK);
   CHECK(fallback.target_requested);
+}
+
+TEST(missing_source_after_the_startup_grace_falls_back_to_the_room_target) {
+  Fixture fixture;
+  fixture.config.max_stove_age_ms = 45000;
+  fixture.prepare_without_relay();
+  fixture.controller.set_room_target(21.0F);
+  for (int i = 0; i < 5; ++i) {
+    fixture.now += 30000;
+    fixture.refresh_stove_inputs();
+  }
+  CHECK(fixture.controller.poll().status == Status::WAITING_SOURCE);
+  fixture.now += 30000;
+  fixture.refresh_stove_inputs();
+  const Decision fallback = fixture.controller.poll();
+  CHECK(fallback.status == Status::FALLBACK);
+  CHECK(fallback.target_requested);
+  CHECK(fallback.target == 21);
 }
 
 TEST(native_source_session_rejects_late_generation_until_new_source_reports) {
@@ -767,7 +797,7 @@ TEST(malformed_relay_input_cannot_unlock_startup_fallback) {
   fixture.config.max_stove_age_ms = 45000;
   fixture.prepare_without_relay();
   fixture.controller.invalidate_relay_source();
-  for (int i = 0; i < 6; ++i) {
+  for (int i = 0; i < 5; ++i) {
     fixture.now += 30000;
     fixture.refresh_stove_inputs();
   }
@@ -865,24 +895,53 @@ TEST(stale_raw_stove_temperature_phase_or_native_target_blocks_automatic_writes)
   CHECK(!stale.target_requested);
 }
 
-TEST(manual_native_target_and_two_stable_divergent_readbacks_latch_local) {
+TEST(manual_native_target_and_two_stable_divergent_readbacks_shift_the_room_target) {
   Fixture manual;
-  manual.prepare();
-  manual.controller.observe_manual_native_target(28.0F);
+  manual.prepare(Mode::COMPENSATION, 20.0F, 18.0F, 23.0F, 25.0F);
+  CHECK(!manual.controller.poll().target_requested);
+  manual.controller.observe_manual_native_target(27.0F);
+  CHECK(manual.controller.mode() == Mode::COMPENSATION);
+  CHECK_NEAR(manual.controller.room_target(), 22.0, 0.001);
   const Decision after_manual = manual.controller.poll();
-  CHECK(after_manual.status == Status::LOCAL_ONLY);
+  CHECK(after_manual.status == Status::REGULATING);
   CHECK(!after_manual.target_requested);
-  CHECK_NEAR(after_manual.native_target, 28.0, 0.001);
+  CHECK_NEAR(after_manual.native_target, 27.0, 0.001);
 
   Fixture readback;
-  readback.prepare();
+  readback.prepare(Mode::COMPENSATION, 20.0F, 18.0F, 23.0F, 25.0F);
   readback.controller.poll();
-  readback.controller.on_rf2_not_emitted();
+  readback.controller.observe_native_target(24.0F);
+  CHECK_NEAR(readback.controller.room_target(), 20.0, 0.001);
   readback.controller.observe_native_target(24.0F);
   CHECK(readback.controller.mode() == Mode::COMPENSATION);
-  readback.controller.observe_native_target(24.0F);
-  CHECK(readback.controller.mode() == Mode::LOCAL_ONLY);
-  CHECK_NEAR(readback.controller.poll().native_target, 24.0, 0.001);
+  CHECK_NEAR(readback.controller.room_target(), 19.0, 0.001);
+  const Decision after_readback = readback.controller.poll();
+  CHECK(after_readback.status == Status::REGULATING);
+  CHECK(!after_readback.target_requested);
+
+  Fixture pi;
+  pi.config.kp = 0.25F;
+  pi.prepare(Mode::PI_CONTROL, 20.0F, 18.0F, 23.0F, 26.0F);
+  pi.controller.poll();
+  pi.controller.observe_manual_native_target(28.0F);
+  CHECK(pi.controller.mode() == Mode::PI_CONTROL);
+  CHECK_NEAR(pi.controller.room_target(), 22.0, 0.001);
+  CHECK(!pi.controller.poll().target_requested);
+
+  Fixture local;
+  local.prepare(Mode::LOCAL_ONLY, 20.0F, 18.0F, 23.0F, 25.0F);
+  local.controller.observe_manual_native_target(27.0F);
+  CHECK(local.controller.mode() == Mode::LOCAL_ONLY);
+  CHECK_NEAR(local.controller.room_target(), 20.0, 0.001);
+}
+
+TEST(manual_native_target_without_usable_source_shifts_the_room_target_by_the_delta) {
+  Fixture fixture;
+  fixture.prepare(Mode::COMPENSATION, 20.0F, 18.0F, 23.0F, 25.0F);
+  fixture.controller.invalidate_relay_source();
+  fixture.controller.observe_manual_native_target(27.0F);
+  CHECK(fixture.controller.mode() == Mode::COMPENSATION);
+  CHECK_NEAR(fixture.controller.room_target(), 22.0, 0.001);
 }
 
 TEST(manual_priority_restarts_the_writer_and_preserves_the_latest_target) {
@@ -903,7 +962,7 @@ TEST(manual_priority_restarts_the_writer_and_preserves_the_latest_target) {
 
   fixture.controller.observe_manual_native_target(27.0F);
   fixture.controller.on_rf2_not_emitted();
-  CHECK(fixture.controller.mode() == Mode::LOCAL_ONLY);
+  CHECK(fixture.controller.mode() == Mode::COMPENSATION);
   writer_script.execute(27, false);
 
   fixture.controller.observe_manual_native_target(29.0F);
@@ -919,7 +978,9 @@ TEST(manual_priority_restarts_the_writer_and_preserves_the_latest_target) {
   CHECK(!writer.calls.back().automatic);
   CHECK(!writer.release(stale_auto_token));
   CHECK(!fixture.controller.authorize_rf2_emission(automatic.target));
-  CHECK(fixture.controller.poll().status == Status::LOCAL_ONLY);
+  const Decision after_manual = fixture.controller.poll();
+  CHECK(after_manual.status == Status::REGULATING);
+  CHECK(!after_manual.target_requested);
   CHECK(writer.release(writer.calls.back().token));
   CHECK(!writer_script.is_action_running());
 }
@@ -952,16 +1013,19 @@ TEST(manual_target_cancels_an_outstanding_automatic_offer_before_stale_resume) {
   CHECK(fixture.controller.authorize_rf2_emission(automatic.target));
 
   fixture.controller.observe_manual_native_target(28.0F);
-  CHECK(fixture.controller.mode() == Mode::LOCAL_ONLY);
+  CHECK(fixture.controller.mode() == Mode::COMPENSATION);
+  CHECK_NEAR(fixture.controller.room_target(), 25.0, 0.001);
   CHECK_NEAR(fixture.controller.poll().native_target, 28.0, 0.001);
   CHECK(!fixture.controller.authorize_rf2_emission(automatic.target));
 
   // The already-waiting automatic script must close its rejected attempt
   // without turning it into an emitted command or pending confirmation.
   fixture.controller.on_rf2_not_emitted();
-  CHECK(fixture.controller.mode() == Mode::LOCAL_ONLY);
+  CHECK(fixture.controller.mode() == Mode::COMPENSATION);
   CHECK(!fixture.controller.authorize_rf2_emission(automatic.target));
-  CHECK(fixture.controller.poll().status == Status::LOCAL_ONLY);
+  const Decision resumed = fixture.controller.poll();
+  CHECK(resumed.status == Status::REGULATING);
+  CHECK(!resumed.target_requested);
 }
 
 TEST(bridge_blocks_writes_and_disconnect_requires_fresh_observations) {
@@ -980,14 +1044,15 @@ TEST(bridge_blocks_writes_and_disconnect_requires_fresh_observations) {
   CHECK(fixture.controller.poll().status == Status::REGULATING);
 }
 
-TEST(bridge_target_change_latches_local_on_disconnect) {
+TEST(bridge_target_change_shifts_the_room_target_on_disconnect) {
   Fixture fixture;
   fixture.prepare();
   fixture.controller.observe_bridge_connected(true);
   fixture.controller.observe_native_target(24.0F);
   fixture.controller.observe_bridge_connected(false);
-  CHECK(fixture.controller.mode() == Mode::LOCAL_ONLY);
-  CHECK(fixture.controller.poll().status == Status::LOCAL_ONLY);
+  CHECK(fixture.controller.mode() == Mode::COMPENSATION);
+  CHECK_NEAR(fixture.controller.room_target(), 24.0, 0.001);
+  CHECK(fixture.controller.poll().status == Status::WAITING_STOVE);
 }
 
 TEST(bridge_disconnect_compares_the_first_fresh_readback_with_the_preserved_baseline) {
@@ -996,8 +1061,9 @@ TEST(bridge_disconnect_compares_the_first_fresh_readback_with_the_preserved_base
   changed.controller.observe_bridge_connected(true);
   changed.controller.observe_bridge_connected(false);
   changed.controller.observe_native_target(24.0F);
-  CHECK(changed.controller.mode() == Mode::LOCAL_ONLY);
-  CHECK(changed.controller.poll().status == Status::LOCAL_ONLY);
+  CHECK(changed.controller.mode() == Mode::COMPENSATION);
+  CHECK_NEAR(changed.controller.room_target(), 24.0, 0.001);
+  CHECK(changed.controller.poll().status == Status::WAITING_STOVE);
 
   Fixture unchanged;
   unchanged.prepare();
@@ -1013,12 +1079,23 @@ TEST(bridge_disconnect_compares_the_first_fresh_readback_with_the_preserved_base
   CHECK(unchanged.controller.poll().status == Status::REGULATING);
 }
 
-TEST(explicit_off_latches_local_but_heat_needs_a_new_postcommand_phase_observation) {
+TEST(explicit_off_pauses_and_heat_resumes_after_a_new_postcommand_phase_observation) {
   Fixture off;
   off.prepare();
   off.controller.on_explicit_mode_command(false);
-  CHECK(off.controller.mode() == Mode::LOCAL_ONLY);
-  CHECK(off.controller.poll().status == Status::LOCAL_ONLY);
+  CHECK(off.controller.mode() == Mode::COMPENSATION);
+  const Decision paused = off.controller.poll();
+  CHECK(paused.status == Status::WAITING_STOVE);
+  CHECK(!paused.target_requested);
+  off.controller.observe_raw_stove_phase(0x0801);
+  CHECK(off.controller.poll().status == Status::STOVE_INACTIVE);
+  off.controller.on_explicit_mode_command(true);
+  off.controller.observe_raw_stove_phase(0x0101);
+  CHECK(off.controller.poll().status == Status::STOVE_INACTIVE);
+  off.controller.observe_raw_stove_phase(0x0201);
+  const Decision resumed = off.controller.poll();
+  CHECK(resumed.status == Status::REGULATING);
+  CHECK(resumed.target_requested);
 
   Fixture heat;
   heat.prepare();

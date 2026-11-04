@@ -95,6 +95,8 @@ class DuepiRoomComponent : public PollingComponent {
   void on_api_client_disconnected();
   bool set_room_target(float temperature_c);
   bool set_fallback_target(float temperature_c);
+  // The selected room target survives a power cut (flash, written on change only).
+  bool load_persisted_room_target(float *temperature_c);
 
   void observe_raw_stove_temperature(float temperature_c) {
     this->controller_.observe_raw_stove_temperature(temperature_c);
@@ -121,6 +123,12 @@ class DuepiRoomComponent : public PollingComponent {
 
  protected:
   void publish_decision_(const Decision &decision);
+  void persist_room_target_();
+  void init_room_target_preference_();
+
+  ESPPreferenceObject room_target_pref_;
+  bool room_target_pref_ready_{false};
+  float persisted_room_target_{NAN};
 
   static DuepiRoomComponent *instance_;
 
@@ -163,6 +171,7 @@ class DuepiRoomClimate : public climate::Climate, public Component {
 class DuepiRoomModeSelect : public select::Select, public Component {
  public:
   void set_parent(DuepiRoomComponent *parent) { this->parent_ = parent; }
+  void set_initial_index(size_t index) { this->initial_index_ = index; }
   void setup() override;
   void publish_mode(Mode mode, bool persist = false);
 
@@ -170,6 +179,7 @@ class DuepiRoomModeSelect : public select::Select, public Component {
   void control(const std::string &value) override;
   DuepiRoomComponent *parent_{nullptr};
   ESPPreferenceObject preference_;
+  size_t initial_index_{0};
 };
 
 class DuepiRoomFallbackNumber : public number::Number, public Component {

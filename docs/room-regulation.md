@@ -50,9 +50,10 @@ copy the dummy values from `tests/fixtures/secrets.yaml` into a device
 configuration.
 
 Compile and install through the usual ESPHome workflow after checking the
-resolved configuration. No room regulation is active on first install: the
-mode starts in **Local**. If a previous external mode is restored, it still
-waits for fresh stove and room-source observations before acting.
+resolved configuration. On first install the mode is the select's
+`initial_option` (default **Local**). The selected mode and the room target are
+kept in flash, so they survive a power cut on ESP8266. A restored external mode
+still waits for fresh stove and room-source observations before acting.
 
 ## Controls and diagnostics
 
@@ -60,11 +61,10 @@ The optional package adds these entities:
 
 | Entity | Purpose |
 | --- | --- |
-| `Room target` climate | Holds the desired room temperature independently from the stove's native setpoint. Its displayed Heat/Off follows the latest recognized raw stove phase; an unknown phase leaves the last display unchanged. This is observation only. Explicit Heat and Off calls use the existing native mode path. Off immediately selects Local. Heat keeps the selected mode and does not activate regulation from Local. |
+| `Room target` climate | Holds the desired room temperature independently from the stove's native setpoint. Its displayed Heat/Off follows the latest recognized raw stove phase; an unknown phase leaves the last display unchanged. This is observation only. Explicit Heat and Off calls use the existing native mode path. Off pauses the regulation without changing the selected mode; the next burning phase resumes it. Heat never activates regulation from Local. |
 | `Room regulation mode` select | **Local**, **Compensation**, or **Compensation + PI**. This is the armed/manual regulation choice. Local leaves native setpoint choices alone. Compensation applies the room-temperature offset. PI adds a bounded integral correction. |
-| `Reactivate room compensation` button | Selects **Compensation** through the existing mode selector. It does not send a Heat/Off command or turn on the stove. |
 | `Room temperature sensor` text (`duepi_room_source`) | Optional Home Assistant `sensor.*` entity ID used for room measurements. It starts empty, is restored across reboot, and can be changed on the device without recompiling. Empty disables native room-source requests. |
-| `Room fallback target` number | Native setpoint used once when the selected regulation mode loses a usable room source. Default: 20 °C (68 °F); it is limited to the configured stove minimum and maximum. |
+| Fallback | When the selected mode loses a usable room source (or none arrives within the 180 s relay grace after boot or a new source session), the room target is written once as the native setpoint, without compensation: the stove regulates on its own probe. |
 | `Room regulation status` text sensor | Operating reason: `local`, `waiting_stove`, `waiting_source`, `regulating`, `fallback`, `bridge`, `stove_inactive`, `awaiting_confirmation`, `command_unconfirmed`, or `uart_busy`. |
 | `Room source age` sensor | Age reported by Home Assistant for the selected room sensor, in seconds. The firmware's default maximum is 15 minutes. |
 | `Room PI correction` sensor | Current bounded PI correction as a Celsius difference (`Δ°C`), without an absolute-temperature device class. It stays zero in Local and Compensation modes. |
@@ -184,8 +184,11 @@ usable room report, and an idle UART. The firmware uses raw RD1000 temperature
 before legacy filtering and raw RD9000 phase; only the stable burning phase
 `0x0201` is eligible. Bridge takeover, alarms, and stale observations suspend
 automatic output and reset PI state as defined by the protocol. An unavailable
-UART suspends writes. A manual native setpoint change or an explicit Off command selects
-Local. Received stove status never creates a Heat or Off command.
+UART suspends writes. A native setpoint chosen outside the regulation (HA stove
+climate, stove panel, remote, official app) is converted into the room target
+that yields it with the current measurements, or shifted by the same delta when
+the room source is unusable; the selected mode is kept. An explicit Off pauses
+the regulation. Received stove status never creates a Heat or Off command.
 
 The known cleaning phases `0x0401` and `0x0200` pause automatic writes and PI
 integration while retaining its accumulated integral for less than two minutes.
