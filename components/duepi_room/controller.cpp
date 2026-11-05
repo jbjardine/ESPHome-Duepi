@@ -13,6 +13,9 @@ constexpr uint16_t ACTIVE_BURNING_PHASE = 0x0201;
 constexpr uint32_t MAX_CLEANING_HOLD_MS = 120000;
 constexpr float TARGET_EPSILON = 0.49F;
 constexpr float STABLE_TARGET_EPSILON = 0.01F;
+// Extra margin beyond the rounding boundary before a new native target is
+// written: without it a value near x.5 alternated 19/20 at every write interval.
+constexpr float TARGET_HYSTERESIS = 0.25F;
 
 float finite_nonnegative(float value) { return std::isfinite(value) && value > 0.0F ? value : 0.0F; }
 
@@ -296,6 +299,7 @@ bool Controller::observe_relay(const RelayMessage &message) {
   }
 
   this->source_present_ = true;
+  this->valid_sample_since_wait_ = true;
   this->fallback_done_ = false;
   if (this->request_offered_ && this->offered_fallback_)
     this->cancel_request_();
@@ -318,6 +322,7 @@ bool Controller::begin_native_source_session(const std::string &generation) {
   this->source_present_ = false;
   this->accepted_relay_packet_seen_ = false;
   this->source_wait_started_ms_ = this->now_();
+  this->valid_sample_since_wait_ = false;
   this->fallback_done_ = false;
   this->reset_integral_();
   this->cancel_request_();
@@ -337,6 +342,7 @@ void Controller::end_native_source_session() {
   this->source_present_ = false;
   this->accepted_relay_packet_seen_ = false;
   this->source_wait_started_ms_ = this->now_();
+  this->valid_sample_since_wait_ = false;
   this->fallback_done_ = false;
   this->reset_integral_();
   this->cancel_request_();
@@ -476,7 +482,9 @@ Decision Controller::poll() {
     this->cancel_request_();
     // Without any accepted packet, give Home Assistant the relay grace period
     // to deliver the first sample before falling back.
-    if (!this->accepted_relay_packet_seen_ &&
+    // An unavailable sensor reported while Home Assistant restarts does not
+    // count: only a valid sample ends the grace early.
+    if (!this->valid_sample_since_wait_ &&
         elapsed_ms(now, this->source_wait_started_ms_) < this->config_.relay_silence_ms)
       return this->make_decision_(Status::WAITING_SOURCE);
 
@@ -538,7 +546,11 @@ Decision Controller::poll() {
   decision.unclamped_target = unclamped_target;
   decision.computed_target = computed_target;
 
-  if (this->round_ties_up(this->native_target_) == computed_target) {
+  const float bounded_target = std::clamp(unclamped_target, static_cast<float>(this->config_.native_min),
+                                          static_cast<float>(this->config_.native_max));
+  if (this->round_ties_up(this->native_target_) == computed_target ||
+      (this->native_target_valid_ &&
+       std::fabs(bounded_target - this->native_target_) < 0.5F + TARGET_HYSTERESIS)) {
     this->cancel_request_();
     return decision;
   }

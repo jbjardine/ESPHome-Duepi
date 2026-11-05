@@ -142,7 +142,8 @@ template<typename T> void exercise_native_source_session(T &controller) {
     unavailable.age_seconds = 0;
     unavailable.sample_id = "1792485120123456";
     CHECK(controller.observe_relay(unavailable));
-    CHECK(controller.poll().status == Status::FALLBACK);
+    // Unavailable right after the new session: wait for the relay grace.
+    CHECK(controller.poll().status == Status::WAITING_SOURCE);
   } else {
     CHECK(false && "Controller lacks native source session support");
   }
@@ -300,6 +301,11 @@ TEST(invalid_relay_with_last_reported_id_allows_the_initial_fallback) {
   CHECK(fixture.controller.poll().status == Status::WAITING_SOURCE);
   CHECK(fixture.controller.observe_relay(parsed));
 
+  // An unavailable sensor right after (re)start (HA still booting) waits for
+  // the relay grace before falling back.
+  CHECK(fixture.controller.poll().status == Status::WAITING_SOURCE);
+  fixture.now += 180000;
+  fixture.refresh_stove_inputs();
   const Decision fallback = fixture.controller.poll();
   CHECK(fallback.status == Status::FALLBACK);
   CHECK(fallback.target_requested);
@@ -451,7 +457,8 @@ TEST(pi_allows_integral_unwinding_when_error_reverses) {
   Fixture fixture;
   fixture.config.kp = 0.0F;
   fixture.config.ki_per_hour = 0.5F;
-  fixture.prepare(Mode::PI_CONTROL, 20.0F, 19.0F, 23.0F, 24.0F);
+  // Stove 23.3 so the integral step (24.3 -> 24.8) clears the write hysteresis.
+  fixture.prepare(Mode::PI_CONTROL, 20.0F, 19.0F, 23.3F, 24.0F);
   fixture.controller.poll();
   fixture.now += 60U * 60U * 1000U;
   fixture.send_sample(2, 19.0F, "1792488600123456");
@@ -698,6 +705,21 @@ TEST(stale_or_explicitly_invalid_source_selects_fallback_once) {
   CHECK(invalid_fallback.target == 20);
 }
 
+TEST(computed_target_within_the_hysteresis_band_keeps_the_native_target) {
+  Fixture inside;
+  inside.prepare(Mode::COMPENSATION, 18.4F, 20.0F, 21.0F, 20.0F);
+  const Decision kept = inside.controller.poll();
+  CHECK(kept.status == Status::REGULATING);
+  CHECK(!kept.target_requested);
+  CHECK_NEAR(kept.unclamped_target, 19.4, 0.001);
+
+  Fixture outside;
+  outside.prepare(Mode::COMPENSATION, 18.2F, 20.0F, 21.0F, 20.0F);
+  const Decision moved = outside.controller.poll();
+  CHECK(moved.target_requested);
+  CHECK(moved.target == 19);
+}
+
 TEST(fallback_uses_the_room_target_without_compensation) {
   Fixture fixture;
   fixture.prepare(Mode::COMPENSATION, 21.0F, 18.0F, 23.0F, 26.0F);
@@ -741,6 +763,9 @@ TEST(no_initial_source_waits_for_an_accepted_postboot_packet_before_fallback) {
   invalid.valid = false;
   invalid.age_seconds = 0;
   CHECK(fixture.controller.observe_relay(invalid));
+  CHECK(fixture.controller.poll().status == Status::WAITING_SOURCE);
+  fixture.now += 30000;
+  fixture.refresh_stove_inputs();
   const Decision fallback = fixture.controller.poll();
   CHECK(fallback.status == Status::FALLBACK);
   CHECK(fallback.target_requested);
@@ -768,6 +793,9 @@ TEST(native_source_session_rejects_late_generation_until_new_source_reports) {
   Fixture fixture;
   fixture.prepare_without_relay();
   exercise_native_source_session(fixture.controller);
+  fixture.now += 180000;
+  fixture.refresh_stove_inputs();
+  CHECK(fixture.controller.poll().status == Status::FALLBACK);
 }
 
 TEST(native_source_session_preserves_an_emitted_rf2_confirmation) {

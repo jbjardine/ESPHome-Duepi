@@ -159,6 +159,7 @@ class Controller {
   uint32_t source_packet_ms_{0};
   bool accepted_relay_packet_seen_{false};
   uint32_t source_wait_started_ms_{0};
+  bool valid_sample_since_wait_{false};
   bool native_source_session_active_{false};
   bool source_present_{false};
   std::string generation_;
