@@ -1,0 +1,48 @@
+esphome:
+  name: duepi-room-opt-in-c3-build
+  friendly_name: Duepi Room opt-in ESP32-C3 build fixture
+  build_path: tests/fixtures/.esphome/room-lolin-c3-mini
+
+esp32:
+  board: lolin_c3_mini
+  framework:
+    type: esp-idf
+
+logger:
+  baud_rate: 0
+  logs:
+    uart_debug: NONE
+
+api:
+  encryption:
+    key: !secret encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: Duepi Room Dummy Fallback
+    password: !secret fallback_ap_password
+
+captive_portal:
+
+substitutions:
+  min_temp: "10"
+  max_temp: "35"
+  temp_unit: "°C"
+  tx_pin_esp: "1"
+  rx_pin_esp: "3"
+
+packages:
+  duepi: !include ../../components/packages.yaml
+  room_regulation: !include ../../components/packages/room_regulation.yaml
+
+external_components:
+  - source:
+      type: local
+      path: ../../components
+    components: [duepi_room]
