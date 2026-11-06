@@ -10,6 +10,7 @@ time:
               condition:
                 lambda: 'return !id(expert_bridge_client_connected);'
               then:
+                - lambda: id(room_poll_active_count)++;
                 - wait_until:
                     condition:
                       lambda: 'return (id(uart_send) == 0);'
@@ -22,6 +23,7 @@ time:
                     timeout: 100ms
                 - lambda: id(uart_send) = 14;
                 - uart.write: "\x1bREE0006C&" #get burn time since last reset
+                - lambda: id(room_poll_active_count)--;
       # Every 10seconds
       - seconds: /10
         then:
@@ -29,6 +31,7 @@ time:
               condition:
                 lambda: 'return !id(expert_bridge_client_connected);'
               then:
+                - lambda: id(room_poll_active_count)++;
                 - wait_until:
                     condition:
                       lambda: 'return (id(uart_send) == 0);'
@@ -150,3 +153,4 @@ time:
                           condition:
                             lambda: 'return (id(uart_send) == 0);'
                           timeout: 100ms
+                - lambda: id(room_poll_active_count)--;

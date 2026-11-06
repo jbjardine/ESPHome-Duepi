@@ -74,6 +74,10 @@ uart:
                   const int STATE_ECO_COOL2       = 0x1002;
                   const int STATE_ECO_OFF         = 0x1003;
                   int currentstate = std::stoi(data_from_server.substr(1, 4), nullptr, 16);
+                  #ifdef USE_DUEPI_ROOM
+                  extern void duepi_room_observe_raw_stove_phase(uint16_t phase);
+                  duepi_room_observe_raw_stove_phase(static_cast<uint16_t>(currentstate));
+                  #endif
                   int kachel_aan = 1;
                   if (STATE_IGNITION == currentstate) { status = "Ignition starting";}
                   else if (STATE_LOAD_WOOD == currentstate) { status = "Ignition starting, load wood"; }
@@ -123,7 +127,12 @@ uart:
                   break;
                 }
                 case 2: {
-                  id(room_temp_stove).publish_state(std::stoi(data_from_server.substr(1, 4), nullptr, 16)/10.0);
+                  float raw_temperature_c = std::stoi(data_from_server.substr(1, 4), nullptr, 16) / 10.0F;
+                  #ifdef USE_DUEPI_ROOM
+                  extern void duepi_room_observe_raw_stove_temperature(float temperature_c);
+                  duepi_room_observe_raw_stove_temperature(raw_temperature_c);
+                  #endif
+                  id(room_temp_stove).publish_state(raw_temperature_c);
                   id(uart_send) = 1;
                   break;
                 }
@@ -135,11 +144,10 @@ uart:
                 case 4: {
                   id(pellet_speed).publish_state(std::stoi(data_from_server.substr(1, 4), nullptr, 16));
                   id(fan_mode) = std::stoi(data_from_server.substr(1, 4), nullptr, 16);
-                  // Mirror the stove fan level only when it changes, and under the
-                  // sync guard: each call refreshes the thermostat, and its first
-                  // refresh after boot fires target_temperature_change_action
-                  // (previous target is NaN), which would send the restored target
-                  // back to the stove as if the user had changed it.
+                  // Mirror the stove's fan level only when it changes, under the sync
+                  // guard: a thermostat call refreshes it, and the first refresh after
+                  // boot fires target_temperature_change_action (prev target is NaN).
+                  // Unguarded, that ran the manual-target path at every boot.
                   {
                     static const ClimateFanMode FAN_BY_LEVEL[] = {
                         ClimateFanMode::CLIMATE_FAN_QUIET, ClimateFanMode::CLIMATE_FAN_LOW,
@@ -170,6 +178,10 @@ uart:
                 case 7: {
                   int err_code = std::stoi(data_from_server.substr(1, 4), nullptr, 16);
                   id(error_code).publish_state(err_code);
+                  #ifdef USE_DUEPI_ROOM
+                  extern void duepi_room_observe_stove_alarm(bool active);
+                  duepi_room_observe_stove_alarm(err_code != 0);
+                  #endif
                   id(uart_send) = 1;
                   // Errors go to their own sensor so burner_status keeps the phase
                   // instead of alternating with the error text every poll.
@@ -188,7 +200,27 @@ uart:
                 }
                 case 8: {
                   int temp = std::stoi(data_from_server.substr(1, 4), nullptr, 16);
-                  if (temp>= ${min_temp}  && temp <= ${max_temp} ) { id(Stove).target_temperature = temp; }
+                  #ifdef USE_DUEPI_ROOM
+                  extern void duepi_room_observe_native_target(float target_c);
+                  duepi_room_observe_native_target(static_cast<float>(temp));
+                  extern int duepi_room_native_min();
+                  extern int duepi_room_native_max();
+                  const int min_target = duepi_room_native_min();
+                  const int max_target = duepi_room_native_max();
+                  #else
+                  const int min_target = ${min_temp};
+                  const int max_target = ${max_temp};
+                  #endif
+                  if (temp >= min_target && temp <= max_target) {
+                    id(climate_sync_in_progress) = true;
+                    const bool target_changed = id(Stove).target_temperature != temp;
+                    id(Stove).target_temperature = temp;
+                    // Thermostat detects direct target changes only on refresh.
+                    // Consume its deferred trigger while the sync guard is active.
+                    if (target_changed)
+                      id(Stove).refresh();
+                    id(climate_sync_in_progress) = false;
+                  }
                   else { id(debug).publish_state("Error temperature out of range :"+temp); }
                   id(uart_send) = 0;
                   break;
