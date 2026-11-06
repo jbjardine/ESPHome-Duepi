@@ -1,0 +1,793 @@
+#include "controller.h"
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
+namespace esphome {
+namespace duepi_room {
+
+namespace {
+
+constexpr uint16_t ACTIVE_BURNING_PHASE = 0x0201;
+constexpr uint32_t MAX_CLEANING_HOLD_MS = 120000;
+constexpr float TARGET_EPSILON = 0.49F;
+constexpr float STABLE_TARGET_EPSILON = 0.01F;
+// Extra margin beyond the rounding boundary before a new native target is
+// written: without it a value near x.5 alternated 19/20 at every write interval.
+constexpr float TARGET_HYSTERESIS = 0.25F;
+
+float finite_nonnegative(float value) { return std::isfinite(value) && value > 0.0F ? value : 0.0F; }
+
+bool close_enough(float left, float right, float tolerance = STABLE_TARGET_EPSILON) {
+  return std::fabs(left - right) <= tolerance;
+}
+
+bool valid_generation(const std::string &generation) {
+  if (generation.size() != 32)
+    return false;
+  for (const char character : generation) {
+    if (!((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')))
+      return false;
+  }
+  return true;
+}
+
+bool cleaning_phase(uint16_t phase) { return phase == 0x0401 || phase == 0x0200; }
+
+}  // namespace
+
+Controller::Controller(Config config, MonotonicClock clock) : config_(config), clock_(std::move(clock)) {
+  if (this->config_.native_max < this->config_.native_min)
+    this->config_.native_max = this->config_.native_min;
+  this->config_.fallback_target = std::isfinite(this->config_.fallback_target)
+                                      ? std::clamp(this->config_.fallback_target,
+                                                   static_cast<float>(this->config_.native_min),
+                                                   static_cast<float>(this->config_.native_max))
+                                      : static_cast<float>(this->config_.native_min);
+  this->config_.kp = finite_nonnegative(this->config_.kp);
+  this->config_.ki_per_hour = finite_nonnegative(this->config_.ki_per_hour);
+  this->config_.integral_limit = finite_nonnegative(this->config_.integral_limit);
+  this->config_.correction_limit = finite_nonnegative(this->config_.correction_limit);
+  this->room_target_ = std::clamp(20.0F, static_cast<float>(this->config_.native_min),
+                                 static_cast<float>(this->config_.native_max));
+  this->boot_ms_ = this->now_();
+  this->source_wait_started_ms_ = this->boot_ms_;
+}
+
+void Controller::set_mode(Mode mode) {
+  this->mode_ = mode;
+  this->reset_integral_();
+  this->cancel_request_();
+  this->pending_confirmation_ = false;
+  this->command_unconfirmed_ = false;
+  this->divergent_target_count_ = 0;
+  if (mode == Mode::LOCAL_ONLY) {
+    this->fallback_done_ = false;
+    return;
+  }
+  this->fallback_done_ = false;
+}
+
+bool Controller::set_room_target(float temperature_c) {
+  if (!std::isfinite(temperature_c) || temperature_c < this->config_.native_min ||
+      temperature_c > this->config_.native_max)
+    return false;
+  if (close_enough(this->room_target_, temperature_c))
+    return true;
+  this->room_target_ = temperature_c;
+  this->room_target_valid_ = true;
+  this->reset_integral_();
+  this->cancel_request_();
+  return true;
+}
+
+bool Controller::set_fallback_target(float temperature_c) {
+  if (!std::isfinite(temperature_c))
+    return false;
+  const float bounded = std::clamp(temperature_c, static_cast<float>(this->config_.native_min),
+                                  static_cast<float>(this->config_.native_max));
+  if (close_enough(this->config_.fallback_target, bounded))
+    return true;
+  this->config_.fallback_target = bounded;
+  this->fallback_done_ = false;
+  this->cancel_request_();
+  return true;
+}
+
+void Controller::observe_raw_stove_temperature(float temperature_c) {
+  const bool was_valid = this->stove_temperature_valid_;
+  const float previous = this->stove_temperature_;
+  if (!std::isfinite(temperature_c)) {
+    this->stove_temperature_valid_ = false;
+    this->reset_after_input_loss_();
+    return;
+  }
+  this->stove_temperature_ = temperature_c;
+  this->stove_temperature_ms_ = this->now_();
+  this->stove_temperature_valid_ = true;
+  if (!was_valid || !close_enough(previous, temperature_c))
+    this->cancel_request_();
+}
+
+void Controller::observe_raw_stove_phase(uint16_t phase) {
+  const uint32_t now = this->now_();
+  this->stove_phase_ = phase;
+  this->stove_phase_ms_ = now;
+  this->stove_phase_valid_ = true;
+  this->stove_phase_revision_++;
+  if (this->phase_after_heat_required_ && this->stove_phase_revision_ == this->required_phase_revision_)
+    this->phase_after_heat_required_ = false;
+  if (cleaning_phase(phase)) {
+    // Changing between the two cleaning phases must not renew the hold window.
+    if (!this->cleaning_active_ && !this->cleaning_resume_pending_)
+      this->cleaning_started_ms_ = now;
+    this->cleaning_active_ = true;
+    this->cleaning_resume_pending_ = false;
+    if (elapsed_ms(now, this->cleaning_started_ms_) >= MAX_CLEANING_HOLD_MS)
+      this->reset_integral_();
+    this->cancel_request_();
+    return;
+  }
+  if (this->cleaning_active_) {
+    this->cleaning_active_ = false;
+    if (phase == ACTIVE_BURNING_PHASE && elapsed_ms(now, this->cleaning_started_ms_) < MAX_CLEANING_HOLD_MS) {
+      this->cleaning_resume_pending_ = true;
+      this->cleaning_resumed_ms_ = now;
+    } else {
+      this->reset_integral_();
+    }
+  }
+  if (phase != ACTIVE_BURNING_PHASE) {
+    this->reset_integral_();
+    this->cancel_request_();
+  }
+}
+
+void Controller::observe_stove_alarm(bool active) {
+  this->stove_alarm_active_ = active;
+  if (!active)
+    return;
+
+  // An RDA alarm invalidates observations that may still describe the last
+  // burning cycle. Require the normal phase/temperature/target poll to refill
+  // them after the alarm clears.
+  this->stove_temperature_valid_ = false;
+  this->stove_phase_valid_ = false;
+  this->native_target_valid_ = false;
+  this->reset_after_input_loss_();
+}
+
+void Controller::observe_native_target(float target_c) {
+  const uint32_t now = this->now_();
+  this->refresh_confirmation_timeout_(now);
+  if (!std::isfinite(target_c)) {
+    this->native_target_valid_ = false;
+    this->reset_after_input_loss_();
+    return;
+  }
+
+  const float previous_target = this->native_target_;
+  const bool previous_valid = this->native_target_valid_;
+  this->native_target_ = target_c;
+  this->native_target_ms_ = now;
+  this->native_target_valid_ = true;
+
+  if (this->bridge_connected_) {
+    this->bridge_latest_target_ = target_c;
+    this->bridge_latest_target_valid_ = true;
+    return;
+  }
+
+  if (this->bridge_baseline_valid_) {
+    const bool changed_target = std::fabs(target_c - this->bridge_baseline_target_) >= TARGET_EPSILON;
+    this->bridge_baseline_valid_ = false;
+    this->bridge_latest_target_valid_ = false;
+    this->last_readback_target_ = target_c;
+    this->last_readback_valid_ = true;
+    this->divergent_target_count_ = 0;
+    if (changed_target)
+      this->shift_room_target_to_native_(target_c, this->bridge_baseline_target_, true);
+  }
+
+  if (this->pending_confirmation_) {
+    if (close_enough(target_c, static_cast<float>(this->emitted_target_))) {
+      this->pending_confirmation_ = false;
+      this->last_readback_target_ = target_c;
+      this->last_readback_valid_ = true;
+      this->divergent_target_count_ = 0;
+    }
+    return;
+  }
+
+  if (this->mode_ != Mode::LOCAL_ONLY && !this->command_unconfirmed_) {
+    if (!this->last_readback_valid_) {
+      this->last_readback_target_ = target_c;
+      this->last_readback_valid_ = true;
+      this->divergent_target_count_ = 0;
+    } else if (std::fabs(target_c - this->last_readback_target_) >= TARGET_EPSILON) {
+      this->cancel_request_();
+      if (this->divergent_target_count_ != 0 &&
+          close_enough(this->divergent_target_, target_c, TARGET_EPSILON)) {
+        this->divergent_target_count_++;
+      } else {
+        this->divergent_target_ = target_c;
+        this->divergent_target_count_ = 1;
+      }
+      if (this->divergent_target_count_ >= 2) {
+        this->shift_room_target_to_native_(target_c, this->last_readback_target_, this->last_readback_valid_);
+        this->divergent_target_count_ = 0;
+        this->native_target_ = target_c;
+        this->native_target_ms_ = now;
+        this->native_target_valid_ = true;
+        this->last_readback_target_ = target_c;
+        this->last_readback_valid_ = true;
+      }
+      return;
+    } else {
+      this->divergent_target_count_ = 0;
+      this->divergent_target_ = target_c;
+      this->last_readback_target_ = target_c;
+    }
+  }
+
+  if (previous_valid && !close_enough(previous_target, target_c))
+    this->cancel_request_();
+}
+
+bool Controller::observe_relay(const RelayMessage &message) {
+  // A native source has a locally chosen session token. Responses from an old
+  // HA action can arrive after a source switch; ignore them without aging or
+  // invalidating the newly selected source.
+  if (this->native_source_session_active_ && message.generation != this->generation_)
+    return false;
+
+  bool valid_message = message.version == 1 && message.generation.size() == 32 && message.sequence != 0;
+  for (const char character : message.generation) {
+    if (!((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')))
+      valid_message = false;
+  }
+  if (message.valid) {
+    if (!message.has_temperature || !std::isfinite(message.temperature_c) || message.sample_id.empty() ||
+        message.sample_id.size() > 20)
+      valid_message = false;
+    for (const char character : message.sample_id) {
+      if (character < '0' || character > '9')
+        valid_message = false;
+    }
+  } else {
+    if (message.has_temperature || message.sample_id.size() > 20)
+      valid_message = false;
+    for (const char character : message.sample_id) {
+      if (character < '0' || character > '9')
+        valid_message = false;
+    }
+  }
+
+  if (!valid_message) {
+    this->invalidate_relay_source();
+    return false;
+  }
+
+  const bool new_generation = this->generation_.empty() || this->generation_ != message.generation;
+  if (new_generation) {
+    this->generation_ = message.generation;
+    this->has_sequence_ = false;
+    this->source_present_ = false;
+    this->reset_integral_();
+    this->cancel_request_();
+    this->fallback_done_ = false;
+  }
+  if (this->has_sequence_ && message.sequence <= this->last_sequence_)
+    return false;
+
+  const bool had_usable_source = this->source_present_ && this->source_.valid;
+  const bool new_sample = message.valid &&
+                          (!this->source_present_ || this->source_.sample_id != message.sample_id || new_generation);
+  this->last_sequence_ = message.sequence;
+  this->has_sequence_ = true;
+  this->source_packet_ms_ = this->now_();
+  this->accepted_relay_packet_seen_ = true;
+  this->source_ = message;
+  if (!message.valid) {
+    this->source_present_ = false;
+    this->reset_integral_();
+    this->cancel_request_();
+    if (had_usable_source)
+      this->fallback_done_ = false;
+    return true;
+  }
+
+  this->source_present_ = true;
+  this->valid_sample_since_wait_ = true;
+  this->fallback_done_ = false;
+  if (this->request_offered_ && this->offered_fallback_)
+    this->cancel_request_();
+  if (new_sample)
+    this->cancel_request_();
+  return true;
+}
+
+bool Controller::begin_native_source_session(const std::string &generation) {
+  if (!valid_generation(generation) ||
+      (this->native_source_session_active_ && generation == this->generation_))
+    return false;
+
+  this->native_source_session_active_ = true;
+  this->generation_ = generation;
+  this->last_sequence_ = 0;
+  this->has_sequence_ = false;
+  this->source_ = RelayMessage{};
+  this->source_packet_ms_ = 0;
+  this->source_present_ = false;
+  this->accepted_relay_packet_seen_ = false;
+  this->source_wait_started_ms_ = this->now_();
+  this->valid_sample_since_wait_ = false;
+  this->fallback_done_ = false;
+  this->reset_integral_();
+  this->cancel_request_();
+  // Do not clear pending_confirmation_, command_unconfirmed_, or the last
+  // emitted write timestamp: a request that reached the stove still needs its
+  // ordinary RC6000 confirmation and write interval.
+  return true;
+}
+
+void Controller::end_native_source_session() {
+  this->native_source_session_active_ = false;
+  this->generation_.clear();
+  this->last_sequence_ = 0;
+  this->has_sequence_ = false;
+  this->source_ = RelayMessage{};
+  this->source_packet_ms_ = 0;
+  this->source_present_ = false;
+  this->accepted_relay_packet_seen_ = false;
+  this->source_wait_started_ms_ = this->now_();
+  this->valid_sample_since_wait_ = false;
+  this->fallback_done_ = false;
+  this->reset_integral_();
+  this->cancel_request_();
+}
+
+void Controller::invalidate_relay_source() {
+  this->clear_source_();
+}
+
+void Controller::observe_manual_native_target(float target_c) {
+  if (!std::isfinite(target_c))
+    return;
+  // A thermostat refresh can replay the unchanged target; only a real change
+  // moves the room target.
+  if (!this->native_target_valid_ || std::fabs(target_c - this->native_target_) >= TARGET_EPSILON)
+    this->shift_room_target_to_native_(target_c, this->native_target_, this->native_target_valid_);
+  this->cancel_request_();
+  this->divergent_target_count_ = 0;
+  this->native_target_ = target_c;
+  this->native_target_ms_ = this->now_();
+  this->native_target_valid_ = true;
+  this->last_readback_target_ = target_c;
+  this->last_readback_valid_ = true;
+}
+
+void Controller::on_explicit_mode_command(bool heat) {
+  if (!heat) {
+    // OFF pauses the regulation without changing the selected mode. Wait for a
+    // new phase observation so a stale burning phase cannot trigger a write.
+    this->reset_integral_();
+    this->cancel_request_();
+    this->phase_after_heat_required_ = true;
+    this->required_phase_revision_ = this->stove_phase_revision_ + 1;
+    return;
+  }
+  // HEAT is routed to the existing native mode path; it must not activate external regulation.
+  if (this->mode_ == Mode::LOCAL_ONLY)
+    return;
+  this->reset_integral_();
+  this->cancel_request_();
+  this->phase_after_heat_required_ = true;
+  this->required_phase_revision_ = this->stove_phase_revision_ + 1;
+}
+
+void Controller::observe_bridge_connected(bool connected) {
+  if (connected == this->bridge_connected_)
+    return;
+  if (connected) {
+    this->bridge_connected_ = true;
+    if (!this->bridge_baseline_valid_) {
+      this->bridge_baseline_valid_ = this->native_target_valid_ &&
+                                     this->fresh_(this->native_target_valid_, this->native_target_ms_, this->now_());
+      this->bridge_baseline_target_ = this->native_target_;
+    }
+    this->bridge_latest_target_valid_ = this->bridge_baseline_valid_;
+    this->bridge_latest_target_ = this->bridge_baseline_target_;
+    this->pending_confirmation_ = false;
+    this->command_unconfirmed_ = false;
+    this->reset_integral_();
+    this->cancel_request_();
+    return;
+  }
+
+  const bool changed_target = this->bridge_baseline_valid_ && this->bridge_latest_target_valid_ &&
+                              std::fabs(this->bridge_latest_target_ - this->bridge_baseline_target_) >=
+                                  TARGET_EPSILON;
+  this->bridge_connected_ = false;
+  this->stove_temperature_valid_ = false;
+  this->stove_phase_valid_ = false;
+  this->native_target_valid_ = false;
+  this->last_readback_valid_ = false;
+  if (changed_target)
+    this->shift_room_target_to_native_(this->bridge_latest_target_, this->bridge_baseline_target_, true);
+  this->bridge_baseline_valid_ = this->bridge_baseline_valid_ && !changed_target;
+  this->bridge_latest_target_valid_ = false;
+  this->clear_source_();
+  this->reset_integral_();
+  this->cancel_request_();
+}
+
+void Controller::observe_uart_availability(bool available) {
+  this->uart_available_ = available;
+  // The shared RF2 path may already be transmitting an authorized offer. It
+  // must call on_rf2_not_emitted() if the attempt is abandoned.
+}
+
+Decision Controller::poll() {
+  const uint32_t now = this->now_();
+  this->refresh_confirmation_timeout_(now);
+
+  if (this->mode_ == Mode::LOCAL_ONLY)
+    return this->make_decision_(Status::LOCAL_ONLY);
+  if (this->bridge_connected_)
+    return this->make_decision_(Status::BRIDGE);
+  if (this->command_unconfirmed_)
+    return this->make_decision_(Status::COMMAND_UNCONFIRMED);
+  if (this->pending_confirmation_)
+    return this->make_decision_(Status::AWAITING_CONFIRMATION);
+  if (this->stove_alarm_active_) {
+    this->reset_after_input_loss_();
+    return this->make_decision_(Status::STOVE_INACTIVE);
+  }
+
+  if (this->stove_phase_valid_ && this->fresh_(true, this->stove_phase_ms_, now) &&
+      this->stove_phase_ != ACTIVE_BURNING_PHASE) {
+    const bool hold_cleaning = this->cleaning_active_ && cleaning_phase(this->stove_phase_) &&
+                               elapsed_ms(now, this->cleaning_started_ms_) < MAX_CLEANING_HOLD_MS &&
+                               this->fresh_(this->stove_temperature_valid_, this->stove_temperature_ms_, now) &&
+                               this->fresh_(this->native_target_valid_, this->native_target_ms_, now) &&
+                               this->source_usable_(now);
+    if (!hold_cleaning)
+      this->reset_integral_();
+    this->cancel_request_();
+    return this->make_decision_(Status::STOVE_INACTIVE);
+  }
+
+  if (this->cleaning_resume_pending_) {
+    const uint32_t since_resume = elapsed_ms(now, this->cleaning_resumed_ms_);
+    if (!this->source_usable_(now) || !this->fresh_(this->stove_phase_valid_, this->stove_phase_ms_, now) ||
+        since_resume >= this->config_.max_stove_age_ms) {
+      this->reset_after_input_loss_();
+    } else if (!this->stove_temperature_valid_ || !this->native_target_valid_ ||
+               elapsed_ms(now, this->stove_temperature_ms_) > since_resume ||
+               elapsed_ms(now, this->native_target_ms_) > since_resume) {
+      // The phase response precedes RD1000 and RC6000 in the normal poll.
+      return this->make_decision_(Status::WAITING_STOVE);
+    }
+  }
+
+  if (!this->stove_inputs_fresh_(now)) {
+    this->reset_after_input_loss_();
+    return this->make_decision_(Status::WAITING_STOVE);
+  }
+
+  if (!this->source_usable_(now)) {
+    this->reset_integral_();
+    this->cancel_request_();
+    // Without any accepted packet, give Home Assistant the relay grace period
+    // to deliver the first sample before falling back.
+    // An unavailable sensor reported while Home Assistant restarts does not
+    // count: only a valid sample ends the grace early.
+    if (!this->valid_sample_since_wait_ &&
+        elapsed_ms(now, this->source_wait_started_ms_) < this->config_.relay_silence_ms)
+      return this->make_decision_(Status::WAITING_SOURCE);
+
+    // Fallback: the stove regulates on its own probe toward the room target,
+    // without compensation.
+    const float fallback_c = this->room_target_valid_ ? this->room_target_ : this->config_.fallback_target;
+    Decision decision = this->make_decision_(Status::FALLBACK);
+    const int fallback = this->clamp_native_(this->round_ties_up(fallback_c));
+    decision.computed_target_available = true;
+    decision.unclamped_target = fallback_c;
+    decision.computed_target = fallback;
+    decision.correction = 0.0F;
+    decision.integral = 0.0F;
+    if (this->fallback_done_ || this->round_ties_up(this->native_target_) == fallback) {
+      this->fallback_done_ = true;
+      this->cancel_request_();
+      return decision;
+    }
+    if (!this->uart_available_) {
+      decision.status = Status::UART_BUSY;
+      return decision;
+    }
+    if (!this->request_offered_) {
+      this->request_offered_ = true;
+      this->offered_target_ = fallback;
+      this->offered_fallback_ = true;
+      decision.target_requested = true;
+      decision.target = fallback;
+    }
+    return decision;
+  }
+
+  const float error = this->room_target_ - this->source_.temperature_c;
+  const float base = this->stove_temperature_ + error;
+  if (this->mode_ == Mode::PI_CONTROL) {
+    if (this->cleaning_resume_pending_) {
+      // Start a new time baseline while keeping the accumulated correction.
+      // Neither cleaning nor the wait for fresh stove readings is integrated.
+      this->last_integrated_sample_id_ = this->source_.sample_id;
+      this->last_integrated_sample_ms_ = now;
+      this->has_integrated_sample_ = true;
+      this->correction_ = this->calculate_correction_(error);
+    } else {
+      this->integrate_new_sample_(now, error, this->stove_temperature_, base);
+    }
+  } else {
+    this->integral_ = 0.0F;
+    this->correction_ = 0.0F;
+  }
+  this->cleaning_resume_pending_ = false;
+
+  const float unclamped_target = base + this->correction_;
+  const int computed_target = this->clamp_native_(this->round_ties_up(unclamped_target));
+  Decision decision = this->make_decision_(Status::REGULATING);
+  decision.error = error;
+  decision.correction = this->correction_;
+  decision.integral = this->integral_;
+  decision.computed_target_available = true;
+  decision.unclamped_target = unclamped_target;
+  decision.computed_target = computed_target;
+
+  const float bounded_target = std::clamp(unclamped_target, static_cast<float>(this->config_.native_min),
+                                          static_cast<float>(this->config_.native_max));
+  if (this->round_ties_up(this->native_target_) == computed_target ||
+      (this->native_target_valid_ &&
+       std::fabs(bounded_target - this->native_target_) < 0.5F + TARGET_HYSTERESIS)) {
+    this->cancel_request_();
+    return decision;
+  }
+  if (!this->uart_available_) {
+    decision.status = Status::UART_BUSY;
+    return decision;
+  }
+  if (this->last_write_valid_ && elapsed_ms(now, this->last_write_ms_) < this->config_.minimum_write_interval_ms)
+    return decision;
+  if (!this->request_offered_) {
+    this->request_offered_ = true;
+    this->offered_target_ = computed_target;
+    this->offered_fallback_ = false;
+    decision.target_requested = true;
+    decision.target = computed_target;
+  }
+  return decision;
+}
+
+bool Controller::authorize_rf2_emission(int target) const {
+  if (!this->request_offered_ || this->offered_target_ != target || this->mode_ == Mode::LOCAL_ONLY ||
+      this->bridge_connected_ || this->command_unconfirmed_ || this->pending_confirmation_ ||
+      !this->uart_available_)
+    return false;
+  const uint32_t now = this->now_();
+  if (!this->active_stove_(now) || !this->stove_inputs_fresh_(now))
+    return false;
+  const bool source_usable = this->source_usable_(now);
+  if (this->offered_fallback_) {
+    if (source_usable || this->fallback_done_)
+      return false;
+  } else {
+    if (!source_usable)
+      return false;
+    if (this->last_write_valid_ &&
+        elapsed_ms(now, this->last_write_ms_) < this->config_.minimum_write_interval_ms)
+      return false;
+  }
+  return true;
+}
+
+bool Controller::on_rf2_emitted(int target) {
+  // Emission is an after-the-fact notification. Rechecking permission here
+  // could lose a real send when UART availability changes during transmission.
+  if (!this->request_offered_ || this->offered_target_ != target)
+    return false;
+  const uint32_t now = this->now_();
+  this->pending_confirmation_ = true;
+  this->emitted_target_ = target;
+  this->emitted_ms_ = now;
+  this->last_write_ms_ = now;
+  this->last_write_valid_ = true;
+  if (this->offered_fallback_)
+    this->fallback_done_ = true;
+  this->cancel_request_();
+  return true;
+}
+
+void Controller::on_rf2_not_emitted() {
+  this->cancel_request_();
+}
+
+uint32_t Controller::now_() const {
+  return this->clock_ ? this->clock_() : 0;
+}
+
+bool Controller::fresh_(bool valid, uint32_t observed_at, uint32_t now) const {
+  return valid && elapsed_ms(now, observed_at) < this->config_.max_stove_age_ms;
+}
+
+bool Controller::stove_inputs_fresh_(uint32_t now) const {
+  return this->active_stove_(now) && this->fresh_(this->stove_temperature_valid_, this->stove_temperature_ms_, now) &&
+         this->fresh_(this->native_target_valid_, this->native_target_ms_, now);
+}
+
+bool Controller::source_usable_(uint32_t now) const {
+  if (!this->source_present_ || !this->source_.valid || !this->source_.has_temperature ||
+      elapsed_ms(now, this->source_packet_ms_) >= this->config_.relay_silence_ms)
+    return false;
+  return this->source_age_ms_(now) <= static_cast<uint64_t>(this->config_.max_source_age_seconds) * 1000ULL;
+}
+
+uint64_t Controller::source_age_ms_(uint32_t now) const {
+  return static_cast<uint64_t>(this->source_.age_seconds) * 1000ULL +
+         static_cast<uint64_t>(elapsed_ms(now, this->source_packet_ms_));
+}
+
+int Controller::clamp_native_(int target) const {
+  return std::clamp(target, this->config_.native_min, this->config_.native_max);
+}
+
+void Controller::reset_integral_() {
+  this->integral_ = 0.0F;
+  this->correction_ = 0.0F;
+  this->last_integrated_sample_id_.clear();
+  this->last_integrated_sample_ms_ = 0;
+  this->has_integrated_sample_ = false;
+  this->cleaning_resume_pending_ = false;
+}
+
+void Controller::cancel_request_() {
+  this->request_offered_ = false;
+  this->offered_target_ = 0;
+  this->offered_fallback_ = false;
+}
+
+void Controller::reset_after_input_loss_() {
+  this->reset_integral_();
+  this->cancel_request_();
+}
+
+void Controller::clear_source_() {
+  const bool had_source = this->source_present_;
+  this->source_present_ = false;
+  this->reset_integral_();
+  this->cancel_request_();
+  if (had_source)
+    this->fallback_done_ = false;
+}
+
+void Controller::refresh_confirmation_timeout_(uint32_t now) {
+  if (this->pending_confirmation_ && elapsed_ms(now, this->emitted_ms_) >= this->config_.confirmation_timeout_ms) {
+    this->pending_confirmation_ = false;
+    this->command_unconfirmed_ = true;
+    this->reset_integral_();
+    this->cancel_request_();
+  }
+}
+
+bool Controller::active_stove_(uint32_t now) const {
+  return this->fresh_(this->stove_phase_valid_, this->stove_phase_ms_, now) &&
+         this->stove_phase_ == ACTIVE_BURNING_PHASE && !this->phase_after_heat_required_;
+}
+
+Decision Controller::make_decision_(Status status) const {
+  const uint32_t now = this->now_();
+  Decision decision;
+  decision.status = status;
+  decision.mode = this->mode_;
+  decision.native_target_available = this->native_target_valid_;
+  decision.native_target = this->native_target_;
+  decision.room_temperature_available = this->source_present_ && this->source_.valid;
+  decision.room_temperature = this->source_.temperature_c;
+  decision.source_age_available = decision.room_temperature_available;
+  if (decision.source_age_available) {
+    const uint64_t age_seconds = this->source_age_ms_(now) / 1000ULL;
+    decision.source_age_seconds = age_seconds > std::numeric_limits<uint32_t>::max()
+                                      ? std::numeric_limits<uint32_t>::max()
+                                      : static_cast<uint32_t>(age_seconds);
+  }
+  decision.correction = this->correction_;
+  decision.integral = this->integral_;
+  return decision;
+}
+
+float Controller::calculate_correction_(float error) const {
+  if (this->mode_ != Mode::PI_CONTROL)
+    return 0.0F;
+  return std::clamp(this->config_.kp * error + this->integral_, -this->config_.correction_limit,
+                    this->config_.correction_limit);
+}
+
+void Controller::integrate_new_sample_(uint32_t now, float error, float stove_temperature, float base) {
+  if (!this->source_present_ || !this->source_.valid ||
+      this->source_.sample_id == this->last_integrated_sample_id_)
+    return;
+
+  if (this->has_integrated_sample_) {
+    const uint32_t elapsed = elapsed_ms(now, this->last_integrated_sample_ms_);
+    if (elapsed > 0) {
+      const float elapsed_hours = static_cast<float>(elapsed) / 3600000.0F;
+      float candidate = this->integral_ + this->config_.ki_per_hour * error * elapsed_hours;
+      candidate = std::clamp(candidate, -this->config_.integral_limit, this->config_.integral_limit);
+      const float candidate_raw_correction = this->config_.kp * error + candidate;
+      const float candidate_correction = std::clamp(candidate_raw_correction, -this->config_.correction_limit,
+                                                    this->config_.correction_limit);
+      const bool correction_saturated_outward =
+          (candidate_raw_correction > this->config_.correction_limit && candidate > this->integral_) ||
+          (candidate_raw_correction < -this->config_.correction_limit && candidate < this->integral_);
+      const float native_output = base + candidate_correction;
+      const bool native_saturated_outward =
+          (native_output > this->config_.native_max && candidate > this->integral_) ||
+          (native_output < this->config_.native_min && candidate < this->integral_);
+      if (!correction_saturated_outward && !native_saturated_outward)
+        this->integral_ = candidate;
+    }
+  }
+
+  this->last_integrated_sample_id_ = this->source_.sample_id;
+  this->last_integrated_sample_ms_ = this->source_packet_ms_;
+  this->has_integrated_sample_ = true;
+  this->correction_ = this->calculate_correction_(error);
+  (void) stove_temperature;
+}
+
+void Controller::shift_room_target_to_native_(float native_target_c, float reference_native_c,
+                                              bool reference_valid) {
+  if (this->mode_ == Mode::LOCAL_ONLY || !std::isfinite(native_target_c))
+    return;
+  const uint32_t now = this->now_();
+  float candidate;
+  if (this->source_usable_(now) && this->fresh_(this->stove_temperature_valid_, this->stove_temperature_ms_, now)) {
+    // Room target that makes the regulation output the chosen native target
+    // with the current measurements. The integral restarts with the new target.
+    const float span = native_target_c - this->stove_temperature_;
+    float error = span;
+    if (this->mode_ == Mode::PI_CONTROL) {
+      error = span / (1.0F + this->config_.kp);
+      if (this->config_.kp * error > this->config_.correction_limit)
+        error = span - this->config_.correction_limit;
+      else if (this->config_.kp * error < -this->config_.correction_limit)
+        error = span + this->config_.correction_limit;
+    }
+    candidate = this->source_.temperature_c + error;
+  } else if (reference_valid && std::isfinite(reference_native_c)) {
+    candidate = this->room_target_ + (native_target_c - reference_native_c);
+  } else {
+    return;
+  }
+  if (!std::isfinite(candidate))
+    return;
+  candidate = std::round(candidate * 10.0F) / 10.0F;
+  candidate = std::clamp(candidate, static_cast<float>(this->config_.native_min),
+                         static_cast<float>(this->config_.native_max));
+  this->set_room_target(candidate);
+}
+
+int Controller::round_ties_up(float value) {
+  if (!std::isfinite(value))
+    return 0;
+  // These early exits preserve round-then-clamp results without overflowing an int cast.
+  if (value >= static_cast<float>(std::numeric_limits<int>::max()) - 1.0F)
+    return std::numeric_limits<int>::max();
+  if (value <= static_cast<float>(std::numeric_limits<int>::min()) + 1.0F)
+    return std::numeric_limits<int>::min();
+  return static_cast<int>(std::floor(static_cast<double>(value) + 0.5));
+}
+
+}  // namespace duepi_room
+}  // namespace esphome
